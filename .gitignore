@@ -1,0 +1,7 @@
+# SwiftPM build output
+.build/
+# build.sh output: the app bundle, icon iconset, snapshots
+build/
+
+# macOS Finder metadata
+.DS_Store
