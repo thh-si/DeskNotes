@@ -85,13 +85,6 @@ final class MarkdownStyler: NSObject, @preconcurrency NSTextStorageDelegate {
         let full = NSRange(location: 0, length: ns.length)
         analysis = NoteCalculator.analyze(storage.string)
         textView?.analysis = analysis
-        // An empty note has no text to take its look from, so the caret would use the default font and
-        // line height and sit off from the placeholder. New typing starts in the base style too.
-        textView?.typingAttributes = [
-            .font: baseFont,
-            .foregroundColor: theme.text,
-            .paragraphStyle: paragraphStyle(indent: 0),
-        ]
         guard full.length > 0 else { return }
 
         storage.setAttributes([
@@ -156,6 +149,12 @@ final class MarkdownStyler: NSObject, @preconcurrency NSTextStorageDelegate {
             style.paragraphSpacing += lineStep
             s.addAttribute(.paragraphStyle, value: style, range: paragraph)
         }
+    }
+
+    /// What typing in an empty note looks like. An empty note has no text to take its look from, so the
+    /// caret would otherwise use the default font and line height and sit off from the placeholder.
+    var baseTypingAttributes: [NSAttributedString.Key: Any] {
+        [.font: baseFont, .foregroundColor: theme.text, .paragraphStyle: paragraphStyle(indent: 0)]
     }
 
     private func paragraphStyle(indent: CGFloat, firstLine: CGFloat? = nil,

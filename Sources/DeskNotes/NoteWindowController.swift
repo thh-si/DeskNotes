@@ -58,7 +58,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     /// The top toolbar: settings and search on the left, new note and the front / back choice on the right.
     private var topPill: NSView!
     private var layerButton: CircleButton!
-    private var isDragResizing = false
     private var capsules: [NSView] = []
     private let dateLabel = NSTextField(labelWithString: "")
     /// The capsule behind the date; its width follows the text.
@@ -99,8 +98,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         layoutManager.addTextContainer(container)
         textView = NoteTextView(frame: NSRect(origin: .zero, size: note.frame.size), textContainer: container)
 
-        let window = NSWindow(contentRect: note.frame,
-                              styleMask: [.titled, .closable, .fullSizeContentView],  // no .resizable: see WindowEdges.swift
+        let window = NoteWindow(contentRect: note.frame,
+                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
                               backing: .buffered,
                               defer: false)
         super.init(window: window)
@@ -118,6 +117,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         window.titlebarAppearsTransparent = true
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
+        window.acceptsMouseMovedEvents = true  // NoteWindow shows the move cursor along the top edge
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 300, height: 180)
         // Clean card: no traffic lights. ⌘W hides, the toolbar has a close button.
@@ -293,33 +293,12 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         topPill.isHidden = true
     }
 
-    /// Left, right and bottom resize the note; a strip along the top moves it.
+    /// A strip along the top moves the note (the sides and bottom resize it, as in any macOS window).
     private func addEdges(to container: NSView) {
         let size = container.bounds.size
-        let t = ResizeEdgeView.thickness, c = ResizeEdgeView.corner, top = MoveStripView.height
-
-        let strip = MoveStripView(frame: NSRect(x: 0, y: size.height - top, width: size.width, height: top))
+        let strip = MoveStripView(frame: NSRect(x: 0, y: size.height - MoveStripView.height, width: size.width, height: MoveStripView.height))
         strip.autoresizingMask = [.width, .minYMargin]
         container.addSubview(strip)
-
-        let specs: [(ResizeEdgeView.Edge, NSRect, NSView.AutoresizingMask)] = [
-            (.left, NSRect(x: 0, y: c, width: t, height: size.height - c - top), [.height, .maxXMargin]),
-            (.right, NSRect(x: size.width - t, y: c, width: t, height: size.height - c - top), [.height, .minXMargin]),
-            (.bottom, NSRect(x: c, y: 0, width: size.width - 2 * c, height: t), [.width, .maxYMargin]),
-            (.bottomLeft, NSRect(x: 0, y: 0, width: c, height: c), [.maxXMargin, .maxYMargin]),
-            (.bottomRight, NSRect(x: size.width - c, y: 0, width: c, height: c), [.minXMargin, .maxYMargin]),
-        ]
-        for (edge, frame, mask) in specs {
-            let view = ResizeEdgeView(edge: edge)
-            view.frame = frame
-            view.autoresizingMask = mask
-            view.onBegin = { [weak self] in self?.isDragResizing = true }
-            view.onEnd = { [weak self] in
-                self?.isDragResizing = false
-                self?.restyleForNewWidth()
-            }
-            container.addSubview(view)
-        }
     }
 
     private func buildTimerBadge(in container: NSView) {
@@ -402,6 +381,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         styler.style(storage)
         storage.endEditing()
         textView.updateInsets()
+        textView.emptyTypingAttributes = styler.baseTypingAttributes
+        if textView.string.isEmpty { textView.typingAttributes = styler.baseTypingAttributes }
         textView.needsDisplay = true
     }
 
@@ -665,7 +646,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func windowDidResize(_ notification: Notification) {
         saveFrame()
         // During a drag, restyle once at the end instead of on every step.
-        if window?.inLiveResize != true, !isDragResizing { restyleForNewWidth() }
+        if window?.inLiveResize != true { restyleForNewWidth() }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { restyleForNewWidth() }

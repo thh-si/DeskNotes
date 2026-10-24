@@ -17,6 +17,8 @@ final class NoteTextView: NSTextView {
     var onTimerCommand: ((TimerCommand) -> Void)?
     private let timerHint = TimerHintView()
     private var wasEmpty = true
+    /// Typing attributes of an empty note; set by the window after styling, never during an edit.
+    var emptyTypingAttributes: [NSAttributedString.Key: Any] = [:]
     var baseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
     /// Shown in an empty note. Short lines that wrap, so nothing is cut off in a narrow note.
     var placeholder = "Start typing…\n\nOr begin the first line with\n" + NoteMode.keywords.joined(separator: " · ")
@@ -251,6 +253,9 @@ final class NoteTextView: NSTextView {
             wasEmpty = isEmpty
             setNeedsDisplay(bounds)
         }
+        // Here the edit is complete. (Doing this inside the styler, while the text is being processed,
+        // left the layout out of step with the text and crashed the next redraw.)
+        if isEmpty, !emptyTypingAttributes.isEmpty { typingAttributes = emptyTypingAttributes }
         updateTimerHint()
     }
 
