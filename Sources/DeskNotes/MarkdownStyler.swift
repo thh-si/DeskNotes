@@ -4,6 +4,8 @@ import NotesCore
 extension NSAttributedString.Key {
     /// Marks the text of a `[label](url)` link; ⌘-click opens it.
     static let deskLink = NSAttributedString.Key("DeskNotesLink")
+    /// Marks text the spell checker should leave alone (keywords, variable names, code, link targets).
+    static let deskNoSpell = NSAttributedString.Key("DeskNotesNoSpell")
 }
 
 enum Metrics {
@@ -24,7 +26,9 @@ enum Metrics {
 /// - Markdown: `**bold**`, `*italic*`, `~~strike~~`, `==highlight==`, `` `code` ``, fenced code,
 ///   `> quotes`, `- bullets`, `1. numbers`, `- [ ] checkboxes`, `---`, `[links](https://…)`,
 /// - coloured text: `{red|text}`, `{#FF8800|text}`.
-final class MarkdownStyler: NSObject, NSTextStorageDelegate {
+/// The note's text storage is only edited on the main thread (`@preconcurrency` checks that at run time).
+@MainActor
+final class MarkdownStyler: NSObject, @preconcurrency NSTextStorageDelegate {
     var theme: NoteTheme
     var fontSize: CGFloat
     weak var textView: NoteTextView?
@@ -50,6 +54,9 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         style(textStorage)
     }
 
+    /// Longest line that gets bold / italic / code / link styling.
+    static let maxInlineLine = 1_500
+
     // MARK: Regular expressions
 
     private static func regex(_ pattern: String) -> NSRegularExpression {
@@ -59,7 +66,6 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
     private static let headingRE = regex(#"^(#{1,6})(\s+)"#)
     private static let quoteRE = regex(#"^(\s*>)\s?"#)
     private static let ruleRE = regex(#"^\s*(?:-{3,}|\*{3,}|_{3,})\s*$"#)
-    private static let listRE = regex(#"^(\s*)((?:[-*+])|(?:\d+[.)]))(\s+)(\[([ xX])\]\s+)?"#)
 
     private static let codeRE = regex(#"`([^`\n]+)`"#)
     private static let colorRE = regex(#"\{([#A-Za-z0-9]+)\|([^}\n]+)\}"#)
@@ -79,6 +85,13 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         let full = NSRange(location: 0, length: ns.length)
         analysis = NoteCalculator.analyze(storage.string)
         textView?.analysis = analysis
+        // An empty note has no text to take its look from, so the caret would use the default font and
+        // line height and sit off from the placeholder. New typing starts in the base style too.
+        textView?.typingAttributes = [
+            .font: baseFont,
+            .foregroundColor: theme.text,
+            .paragraphStyle: paragraphStyle(indent: 0),
+        ]
         guard full.length > 0 else { return }
 
         storage.setAttributes([
@@ -100,8 +113,13 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
                 self.styleCodeBlockLine(storage, line)
                 return
             }
+            if TimerCommand.parse(text) != nil {
+                storage.addAttributes([.foregroundColor: self.theme.timerColor, .deskNoSpell: true], range: line)
+            }
             self.styleBlock(storage, text, line)
-            self.styleInline(storage, ns as String, line)
+            // The inline patterns are quadratic on some long lines (8 s on 20,000 characters of
+            // "*a *a …"), and they run on every keystroke: past this length a line stays plain.
+            if line.length <= Self.maxInlineLine { self.styleInline(storage, ns as String, line) }
         }
 
         styleAnalysis(storage, ns)
@@ -151,15 +169,16 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
     }
 
     private func styleCodeBlockLine(_ s: NSTextStorage, _ line: NSRange) {
-        s.addAttributes([.font: monoFont, .backgroundColor: theme.codeBackground], range: line)
+        s.addAttributes([.font: monoFont, .backgroundColor: theme.codeBackground, .deskNoSpell: true], range: line)
     }
 
     /// Everything the calculator / mode analysis knows: keyword, variable names, list items.
     private func styleAnalysis(_ s: NSTextStorage, _ ns: NSString) {
         if let range = analysis.keywordRange, let color = theme.keywordColor(analysis.mode), NSMaxRange(range) <= ns.length {
-            s.addAttribute(.foregroundColor, value: color, range: range)
+            s.addAttributes([.foregroundColor: color, .deskNoSpell: true], range: range)
         }
         for label in analysis.labels where NSMaxRange(label.separator) <= ns.length {
+            s.addAttribute(.deskNoSpell, value: true, range: label.name)
             s.addAttribute(.foregroundColor, value: theme.teal, range: label.name)
             s.addAttribute(.foregroundColor, value: theme.purple, range: label.separator)
         }
@@ -204,18 +223,17 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
             s.addAttribute(.foregroundColor, value: theme.purple, range: abs(m.range(at: 1)))
             return
         }
-        if let m = Self.listRE.firstMatch(in: text, range: whole) {
-            let prefix = (text as NSString).substring(with: m.range)
-            let width = (prefix as NSString).size(withAttributes: [.font: baseFont]).width
+        if let prefix = ListPrefix.match(in: text) {
+            let width = ((text as NSString).substring(with: prefix.range) as NSString).size(withAttributes: [.font: baseFont]).width
             s.addAttribute(.paragraphStyle, value: paragraphStyle(indent: width, firstLine: 0), range: line)
-            s.addAttribute(.foregroundColor, value: theme.purple, range: abs(m.range(at: 2)))
-            if m.range(at: 4).location != NSNotFound {
-                s.addAttribute(.foregroundColor, value: theme.purple, range: abs(m.range(at: 4)))
-                let mark = (text as NSString).substring(with: m.range(at: 5))
-                if mark.lowercased() == "x" {
-                    let rest = NSRange(location: NSMaxRange(abs(m.range)), length: NSMaxRange(line) - NSMaxRange(abs(m.range)))
+            s.addAttribute(.foregroundColor, value: theme.purple, range: abs(prefix.marker))
+            if let box = prefix.box {
+                s.addAttribute(.foregroundColor, value: theme.purple, range: abs(box))
+                if prefix.isChecked {
+                    let end = NSMaxRange(abs(prefix.range))
                     s.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                                     .foregroundColor: theme.secondary], range: rest)
+                                     .foregroundColor: theme.secondary],
+                                    range: NSRange(location: end, length: NSMaxRange(line) - end))
                 }
             }
         }
@@ -243,7 +261,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
         }
 
         each(Self.codeRE) { m in
-            s.addAttributes([.font: monoFont, .backgroundColor: theme.codeBackground], range: m.range)
+            s.addAttributes([.font: monoFont, .backgroundColor: theme.codeBackground, .deskNoSpell: true], range: m.range)
             dim(NSRange(location: m.range.location, length: 1))
             dim(NSRange(location: NSMaxRange(m.range) - 1, length: 1))
             protected.append(m.range)
@@ -267,6 +285,7 @@ final class MarkdownStyler: NSObject, NSTextStorageDelegate {
                              .toolTip: target], range: label)
             dim(NSRange(location: m.range.location, length: 1))
             dim(NSRange(location: NSMaxRange(label), length: NSMaxRange(m.range) - NSMaxRange(label)))
+            s.addAttribute(.deskNoSpell, value: true, range: m.range(at: 2))
         }
         each(Self.highlightRE) { m in
             s.addAttribute(.backgroundColor, value: theme.highlight, range: m.range(at: 1))

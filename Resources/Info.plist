@@ -15,9 +15,15 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.1</string>
+    <string>1.0.0</string>
     <key>CFBundleVersion</key>
-    <string>2</string>
+    <string>3</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 DeskNotes contributors. MIT License.</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <!-- Menu-bar-only app: no Dock icon, no app menu. -->

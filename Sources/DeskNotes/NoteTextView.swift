@@ -13,8 +13,13 @@ final class NoteTextView: NSTextView {
             needsDisplay = true
         }
     }
+    /// A `timer …` line was completed with Return.
+    var onTimerCommand: ((TimerCommand) -> Void)?
+    private let timerHint = TimerHintView()
     var baseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
-    var placeholder = "Start typing…   or begin with   math · list · sum · avg · count"
+    /// Shown in an empty note. Short lines that wrap, so nothing is cut off in a narrow note.
+    var placeholder = "Start typing…\n\nOr begin the first line with\n" + NoteMode.keywords.joined(separator: " · ")
+        + "\n\nOr type timer 5 and press Return."
 
     /// Set by the styler after every edit.
     var analysis = NoteAnalysis() {
@@ -71,8 +76,13 @@ final class NoteTextView: NSTextView {
         let origin = textContainerOrigin
 
         if string.isEmpty {
-            placeholder.draw(at: NSPoint(x: origin.x, y: origin.y),
-                             withAttributes: [.font: baseFont, .foregroundColor: theme.marker])
+            let style = NSMutableParagraphStyle()
+            style.lineHeightMultiple = Metrics.lineHeightMultiple
+            // Real text starts after the container's line-fragment padding; the placeholder must too.
+            let pad = tc.lineFragmentPadding
+            let area = NSRect(x: origin.x + pad, y: origin.y, width: max(60, tc.size.width - 2 * pad), height: bounds.height)
+            (placeholder as NSString).draw(with: area, options: .usesLineFragmentOrigin,
+                                           attributes: [.font: baseFont, .foregroundColor: theme.marker, .paragraphStyle: style])
             return
         }
         let length = (string as NSString).length
@@ -185,12 +195,67 @@ final class NoteTextView: NSTextView {
         super.insertTab(sender)
     }
 
+    // MARK: Timer lines
+
+    /// The line the caret is at the end of, if it is a `timer …` line.
+    private func timerLineAtCaret() -> (text: String, contentsEnd: Int)? {
+        let selection = selectedRange()
+        guard selection.length == 0 else { return nil }
+        let ns = string as NSString
+        var start = 0, end = 0, contentsEnd = 0
+        ns.getLineStart(&start, end: &end, contentsEnd: &contentsEnd, for: selection)
+        guard selection.location == contentsEnd, contentsEnd > start else { return nil }
+        let text = ns.substring(with: NSRange(location: start, length: contentsEnd - start))
+        return TimerCommand.isTimerLine(text) ? (text, contentsEnd) : nil
+    }
+
+    /// Shows what Return would do under a `timer …` line, and the other commands while it is unfinished.
+    func updateTimerHint() {
+        guard let line = timerLineAtCaret(), let lm = layoutManager, let tc = textContainer, !string.isEmpty else {
+            hideTimerHint()
+            return
+        }
+        let command = TimerCommand.parse(line.text)
+        let first = command?.hint(pomodoro: Settings.pomodoro) ?? "Keep typing, or pick one:"
+        let isBare = line.text.trimmingCharacters(in: .whitespaces).lowercased() == "timer"
+        let sheet = command == nil || isBare ? TimerCommand.cheatSheet : []
+
+        let size = timerHint.setText(first: first, sheet: sheet, maxWidth: min(360, tc.size.width))
+        let glyph = lm.glyphIndexForCharacter(at: max(0, line.contentsEnd - 1))
+        let fragment = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        let origin = textContainerOrigin
+        timerHint.frame = NSRect(x: origin.x, y: origin.y + fragment.maxY + 6, width: size.width, height: size.height)
+        if timerHint.superview == nil { addSubview(timerHint) }
+        if timerHint.isHidden {
+            timerHint.isHidden = false
+            scrollToVisible(timerHint.frame)
+        }
+    }
+
+    private func hideTimerHint() {
+        if !timerHint.isHidden { timerHint.isHidden = true }
+    }
+
+    override func setSelectedRanges(_ ranges: [NSValue], affinity: NSSelectionAffinity, stillSelecting: Bool) {
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        if !stillSelecting { updateTimerHint() }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        updateTimerHint()
+    }
+
     // MARK: Lists
 
-    private static let listRE = try! NSRegularExpression(
-        pattern: #"^(\s*)(?:([-*+])|(\d+)([.)]))(\s+)(\[[ xX]\]\s+)?"#)
-
     override func insertNewline(_ sender: Any?) {
+        // `timer 5` + Return starts the timer; the line stays in the note and a new line begins.
+        if let line = timerLineAtCaret(), let command = TimerCommand.parse(line.text) {
+            hideTimerHint()
+            onTimerCommand?(command)
+            super.insertNewline(sender)
+            return
+        }
         commitResultAtCaret()
         if continueList() { return }
         super.insertNewline(sender)
@@ -207,28 +272,20 @@ final class NoteTextView: NSTextView {
 
         let line = NSRange(location: start, length: contentsEnd - start)
         let text = ns.substring(with: line) as NSString
-        guard let m = Self.listRE.firstMatch(in: text as String, range: NSRange(location: 0, length: text.length)) else {
-            return false
-        }
+        guard let prefix = ListPrefix.match(in: text as String) else { return false }
 
-        if m.range.length == line.length {
-            if shouldChangeText(in: line, replacementString: "") {
-                textStorage?.replaceCharacters(in: line, with: "")
-                didChangeText()
-            }
+        if prefix.range.length == line.length {
+            replace(line, with: "")
             return true
         }
 
-        let indent = text.substring(with: m.range(at: 1))
-        let marker: String
-        if m.range(at: 2).location != NSNotFound {
-            marker = text.substring(with: m.range(at: 2))
-        } else {
-            let number = Int(text.substring(with: m.range(at: 3))) ?? 0
-            marker = "\(number + 1)" + text.substring(with: m.range(at: 4))
+        let indent = text.substring(with: prefix.indent)
+        var marker = text.substring(with: prefix.marker)
+        if let delimiter = marker.last, let number = Int(marker.dropLast()) {
+            marker = "\(number + 1)\(delimiter)"
         }
-        let spacing = text.substring(with: m.range(at: 5))
-        let box = m.range(at: 6).location != NSNotFound ? "[ ] " : ""
+        let spacing = text.substring(with: prefix.spacing)
+        let box = prefix.box != nil ? "[ ] " : ""
 
         super.insertNewline(nil)
         insertText(indent + marker + spacing + box, replacementRange: selectedRange())
@@ -236,8 +293,6 @@ final class NoteTextView: NSTextView {
     }
 
     // MARK: Mouse: checkboxes and links
-
-    private static let checkboxRE = try! NSRegularExpression(pattern: #"^\s*(?:[-*+]|\d+[.)])\s+(\[[ xX]\])"#)
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
@@ -306,14 +361,30 @@ final class NoteTextView: NSTextView {
 
         let ns = string as NSString
         let lineRange = ns.lineRange(for: NSRange(location: index, length: 0))
-        let line = ns.substring(with: lineRange)
-        guard let m = Self.checkboxRE.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length)) else {
-            return nil
-        }
-        let box = NSRange(location: lineRange.location + m.range(at: 1).location, length: 3)
+        guard let lineBox = ListPrefix.match(in: ns.substring(with: lineRange))?.box else { return nil }
+        let box = NSRange(location: lineRange.location + lineBox.location, length: lineBox.length)
         let glyphs = lm.glyphRange(forCharacterRange: box, actualCharacterRange: nil)
         let rect = lm.boundingRect(forGlyphRange: glyphs, in: tc).insetBy(dx: -3, dy: -2)
         return rect.contains(local) ? box : nil
+    }
+
+    // MARK: Text checking (Edit menu)
+    // The menu items act on the note you are typing in; these also remember the choice, so other
+    // notes and notes opened later follow it.
+
+    override func toggleContinuousSpellChecking(_ sender: Any?) {
+        super.toggleContinuousSpellChecking(sender)
+        Settings.spellChecking = isContinuousSpellCheckingEnabled
+    }
+
+    override func toggleAutomaticTextReplacement(_ sender: Any?) {
+        super.toggleAutomaticTextReplacement(sender)
+        Settings.textReplacement = isAutomaticTextReplacementEnabled
+    }
+
+    override func toggleAutomaticSpellingCorrection(_ sender: Any?) {
+        super.toggleAutomaticSpellingCorrection(sender)
+        Settings.autoCorrect = isAutomaticSpellingCorrectionEnabled
     }
 
     // MARK: Formatting commands (Format menu)

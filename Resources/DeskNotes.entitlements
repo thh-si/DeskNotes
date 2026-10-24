@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Sandbox: the app can only touch its own container (~/Library/Containers/<bundle id>/).
+         Notes are stored there. No network, no file-picker, no other access is requested, because
+         DeskNotes needs none: links are handed to the default browser by the system. -->
+    <key>com.apple.security.app-sandbox</key>
+    <true/>
+</dict>
+</plist>

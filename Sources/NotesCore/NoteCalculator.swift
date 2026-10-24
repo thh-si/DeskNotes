@@ -1,8 +1,11 @@
 import Foundation
 
 /// A note's mode is chosen by a keyword alone on its first line (`list`, `list: Groceries`, `sum` …).
-public enum NoteMode: String, Equatable {
+public enum NoteMode: String, Equatable, CaseIterable, Sendable {
     case plain, math, list, sum, avg, count
+
+    /// The words that switch a note into a mode, in menu order: `math`, `list`, `sum`, `avg`, `count`.
+    public static let keywords = allCases.filter { $0 != .plain }.map(\.rawValue)
 }
 
 /// One calculated line of a note.
@@ -64,13 +67,17 @@ public struct NoteAnalysis: Equatable {
 /// - A first line of `list`, `sum`, `avg` or `count` switches the note into that mode.
 public enum NoteCalculator {
     private static let keywordRE = try! NSRegularExpression(
-        pattern: #"^(\s*)(math|list|sum|avg|count)\s*(?::.*)?$"#, options: [.caseInsensitive])
-    private static let prefixRE = try! NSRegularExpression(
-        pattern: #"^\s*(?:>\s*|(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?|#{1,6}\s+)"#)
+        pattern: #"^(\s*)("# + NoteMode.keywords.joined(separator: "|") + #")\s*(?::.*)?$"#, options: [.caseInsensitive])
+    /// Quote and heading markers before a calculation (list markers are handled by `ListPrefix`).
+    private static let quoteOrHeadingRE = try! NSRegularExpression(pattern: #"^\s*(?:>\s*|#{1,6}\s+)"#)
+    /// `name: expression` / `name = expression`. The name is words joined by spaces and never ends in a
+    /// space, so there is only one way to match it: a lazy `[… ]*?` followed by `\s*` would try every
+    /// split of a long run of spaces (minutes on a line of 100,000 spaces).
     private static let labelRE = try! NSRegularExpression(
-        pattern: #"^([A-Za-z_][A-Za-z0-9_ ]*?)\s*([:=])\s*(\S.*)$"#)
+        pattern: #"^([A-Za-z_][A-Za-z0-9_]*(?: +[A-Za-z0-9_]+)*)\s*([:=])\s*(\S.*)$"#)
+    /// Lines longer than this are text, not calculations; skipping them keeps a pasted wall of text cheap.
+    private static let maxCalculatedLine = 2_000
     private static let literalRE = try! NSRegularExpression(pattern: #"^[$€£]?\s*[\d.,]+$"#)
-    private static let doneRE = try! NSRegularExpression(pattern: #"(\s*)/x\s*$"#, options: [.caseInsensitive])
     /// Numbers in `sum` / `avg` notes: `4,25` with a decimal comma, `1,250.50` with a decimal point.
     private static let commaNumberRE = try! NSRegularExpression(
         pattern: #"(?<![\w.,])([$€£])?\s?(\d+(?:[.,]\d+)?)"#)
@@ -124,7 +131,9 @@ public enum NoteCalculator {
             let raw = ns.substring(with: lineRange)
             let rawNS = raw as NSString
             var prefixLength = 0
-            if let m = prefixRE.firstMatch(in: raw, range: NSRange(location: 0, length: rawNS.length)) {
+            if let list = ListPrefix.match(in: raw) {
+                prefixLength = list.range.length
+            } else if let m = quoteOrHeadingRE.firstMatch(in: raw, range: NSRange(location: 0, length: rawNS.length)) {
                 prefixLength = m.range.length
             }
             let afterPrefix = rawNS.substring(from: prefixLength) as NSString
@@ -139,6 +148,7 @@ public enum NoteCalculator {
                 block.removeAll()
                 continue
             }
+            if (body as NSString).length > maxCalculatedLine { continue }
             let bodyOffset = lineRange.location + prefixLength + leading
 
             var trailingEquals = false
@@ -201,11 +211,27 @@ public enum NoteCalculator {
             let trimmed = text.trimmingCharacters(in: .whitespaces)
             if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
             var marker: NSRange?
-            if let m = doneRE.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
-                marker = NSRange(location: range.location + m.range.location, length: m.range.length)
+            if let m = doneMarker(in: text as NSString) {
+                marker = NSRange(location: range.location + m.location, length: m.length)
             }
             analysis.listItems.append(ListItem(range: range, isDone: marker != nil, doneMarker: marker))
         }
+    }
+
+    /// The ` /x` at the end of a ticked item, with the whitespace before it (and any after it).
+    /// Scans backwards from the end instead of using a regular expression: `(\s*)/x\s*$` is quadratic
+    /// on a long run of spaces, because it is tried from every position.
+    private static func doneMarker(in text: NSString) -> NSRange? {
+        func isSpace(_ unit: unichar) -> Bool {
+            UnicodeScalar(unit).map { CharacterSet.whitespaces.contains($0) } ?? false
+        }
+        var end = text.length
+        while end > 0, isSpace(text.character(at: end - 1)) { end -= 1 }
+        guard end >= 2, text.character(at: end - 2) == 0x2F /* / */,
+              text.character(at: end - 1) == 0x78 || text.character(at: end - 1) == 0x58 /* x X */ else { return nil }
+        var start = end - 2
+        while start > 0, isSpace(text.character(at: start - 1)) { start -= 1 }
+        return NSRange(location: start, length: text.length - start)
     }
 
     // MARK: sum / avg

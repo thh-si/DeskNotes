@@ -3,6 +3,7 @@ import Carbon.HIToolbox
 
 /// System-wide shortcuts through the Carbon hot-key API. Unlike event taps or key monitors,
 /// this needs no Accessibility / Input Monitoring permission.
+@MainActor
 final class HotKeyCenter {
     static let shared = HotKeyCenter()
 
@@ -36,7 +37,8 @@ final class HotKeyCenter {
             var hotKeyID = EventHotKeyID()
             GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
                               nil, MemoryLayout<EventHotKeyID>.size, nil, &hotKeyID)
-            DispatchQueue.main.async { HotKeyCenter.shared.handlers[hotKeyID.id]?() }
+            let id = hotKeyID.id
+            Task { @MainActor in HotKeyCenter.shared.handlers[id]?() }
             return noErr
         }, 1, &spec, nil, nil)
     }

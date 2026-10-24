@@ -5,3 +5,6 @@ build/
 
 # macOS Finder metadata
 .DS_Store
+
+# Build output kept out of Spotlight: macOS does not index folders ending in .noindex
+build.noindex/

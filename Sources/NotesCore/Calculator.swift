@@ -54,7 +54,9 @@ public struct Calculator {
         return text
     }
 
-    private static let formatters = NSCache<NSString, NumberFormatter>()
+    // NSCache is thread-safe, and a NumberFormatter is only configured before it goes in (formatting
+    // with it is thread-safe), but neither is marked Sendable, hence `nonisolated(unsafe)`.
+    nonisolated(unsafe) private static let formatters = NSCache<NSString, NumberFormatter>()
 
     /// Creating a NumberFormatter is expensive and results are formatted on every keystroke, so one
     /// is kept per configuration. The key includes the separators: custom ones set in System Settings

@@ -1,17 +1,11 @@
 import AppKit
 import NotesCore
+import SwiftUI
 
 /// Reports the mouse entering / leaving the note, to fade the toolbar in and out.
 final class HoverView: NSView {
     var onHover: ((Bool) -> Void)?
-    /// The note's paper colour. The window paints it too; drawing it here makes snapshots complete.
-    var fillColor: NSColor? { didSet { needsDisplay = true } }
     private var area: NSTrackingArea?
-
-    override func draw(_ dirtyRect: NSRect) {
-        fillColor?.setFill()
-        dirtyRect.fill()
-    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -26,52 +20,29 @@ final class HoverView: NSView {
     override func mouseExited(with event: NSEvent) { onHover?(false) }
 }
 
-/// A round, softly tinted icon button for the toolbar pill.
-final class CircleButton: NSButton {
-    init(symbol: String, tip: String, target: AnyObject?, action: Selector?) {
-        super.init(frame: NSRect(x: 0, y: 0, width: 34, height: 34))
-        self.target = target
-        self.action = action
-        isBordered = false
-        imagePosition = .imageOnly
-        toolTip = tip
-        setSymbol(symbol)
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 34).isActive = true
-        heightAnchor.constraint(equalToConstant: 34).isActive = true
-    }
+/// The note's paper colour, with the note's opacity as its alpha. Sits above the blur layer, below
+/// the text. Drawn (not a layer colour) so that snapshots include it.
+final class TintView: NSView {
+    var fillColor = NSColor.white { didSet { needsDisplay = true } }
 
-    required init?(coder: NSCoder) { fatalError("not used") }
-
-    func setSymbol(_ name: String) {
-        image = NSImage(systemSymbolName: name, accessibilityDescription: toolTip)?
-            .withSymbolConfiguration(.init(pointSize: 13, weight: .medium))
-    }
-
-    private var fill = NSColor.clear
-
-    func apply(theme: NoteTheme) {
-        contentTintColor = theme.secondary
-        fill = theme.text.withAlphaComponent(0.06)
-        needsDisplay = true
-    }
-
-    /// The round background is drawn here (always a true circle, whatever size the stack gives us).
     override func draw(_ dirtyRect: NSRect) {
-        let diameter = min(bounds.width, bounds.height)
-        fill.setFill()
-        NSBezierPath(ovalIn: NSRect(x: bounds.midX - diameter / 2, y: bounds.midY - diameter / 2,
-                                    width: diameter, height: diameter)).fill()
-        super.draw(dirtyRect)
+        fillColor.setFill()
+        dirtyRect.fill(using: .copy)
     }
 }
 
 /// One note on the desktop: a white rounded card with no visible title bar. A toolbar pill with
 /// delete, date and options fades in at the bottom while the mouse is over the note.
-final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate {
+final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSPopoverDelegate {
     let noteID: UUID
     var onNewNote: (() -> Void)?
     var onDelete: ((UUID) -> Void)?
+    var onSetReminder: ((UUID, Date) -> Void)?
+    var onClearReminder: ((UUID) -> Void)?
+    var onSetSlot: ((UUID, Int?) -> Void)?
+    var onTimerCommand: ((UUID, TimerCommand) -> Void)?
+    var onTimerToggle: (() -> Void)?
+    var onTimerStop: (() -> Void)?
 
     private let store: NoteStore
     private let storage = NSTextStorage()
@@ -80,19 +51,32 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private var theme: NoteTheme
     private var isConfigured = false
 
-    private let pill = NSVisualEffectView()
+    /// The toolbar: two glass capsules with the date between them.
+    private var pill: NSView!
+    private var capsules: [NSView] = []
     private let dateLabel = NSTextField(labelWithString: "")
+    /// The capsule behind the date; its width follows the text.
+    private var dateWidth: NSLayoutConstraint?
+    /// The popover that is open right now (reminder), if any. The toolbar stays while it is open.
+    private var popover: NSPopover?
+    private var isMouseInside = false
     private var trashButton: CircleButton!
     private var pinButton: CircleButton!
     private var buttons: [CircleButton] = []
-    private var fontObserver: NSObjectProtocol?
-    private var paper: HoverView!
+    /// Frosted blur of what is behind the window; only visible when the note is translucent.
+    private let backdrop = NSVisualEffectView()
+    private let tint = TintView()
+    /// The running timer, when it was started from this note.
+    private let timerBadge = TimerBadgeView(frame: .zero)
+    private var timerDisplay: TimerDisplay?
 
-    private static let dateFormatter: DateFormatter = {
+    private static func formatter(_ template: String) -> DateFormatter {
         let f = DateFormatter()
-        f.setLocalizedDateFormatFromTemplate("dMMMyyyy")
+        f.setLocalizedDateFormatFromTemplate(template)
         return f
-    }()
+    }
+    private static let shortDate = formatter("dMMM")
+    private static let longDate = formatter("dMMMyyyy")
 
     init(note: Note, store: NoteStore) {
         self.noteID = note.id
@@ -119,10 +103,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
-    deinit {
-        if let fontObserver { NotificationCenter.default.removeObserver(fontObserver) }
-    }
-
     // MARK: Setup
 
     private func configure(window: NSWindow, note: Note) {
@@ -133,7 +113,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         window.titlebarSeparatorStyle = .none
         window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 260, height: 180)
+        window.minSize = NSSize(width: 300, height: 180)
         // Clean card: no traffic lights. ⌘W hides, the toolbar has a close button.
         for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             window.standardWindowButton(button)?.isHidden = true
@@ -149,12 +129,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView.allowsUndo = true
         textView.isRichText = false
         textView.importsGraphics = false
-        // Markdown needs literal characters: no smart quotes, no "--" → "–", no auto-corrections.
+        // Markdown needs literal characters: never smart quotes or "--" → "–".
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
-        textView.isAutomaticTextReplacementEnabled = false
-        textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isContinuousSpellCheckingEnabled = false
+        applyTextPrefs()
         textView.delegate = self
 
         let scroll = NSScrollView(frame: NSRect(origin: .zero, size: note.frame.size))
@@ -167,12 +145,29 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         scroll.documentView = textView
         scroll.autoresizingMask = [.width, .height]
 
+        // Translucency: the window itself is see-through; blur and paper colour are views inside it.
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        backdrop.material = .popover
+        backdrop.blendingMode = .behindWindow
+        backdrop.state = .active  // keep the blur when the note isn't the active window
+        for layer in [backdrop, tint] as [NSView] {
+            layer.frame = NSRect(origin: .zero, size: note.frame.size)
+            layer.autoresizingMask = [.width, .height]
+        }
+
         let container = HoverView(frame: NSRect(origin: .zero, size: note.frame.size))
+        container.addSubview(backdrop)
+        container.addSubview(tint)
         container.addSubview(scroll)
-        container.onHover = { [weak self] inside in self?.setToolbarVisible(inside) }
-        paper = container
+        container.onHover = { [weak self] inside in self?.hoverChanged(inside) }
         window.contentView = container
         buildToolbar(in: container)
+        buildTimerBadge(in: container)
+        textView.onTimerCommand = { [weak self] command in
+            guard let self else { return }
+            self.onTimerCommand?(self.noteID, command)
+        }
 
         styler.textView = textView
         storage.delegate = styler
@@ -184,58 +179,104 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         applyTheme()
         updateDate()
 
-        fontObserver = NotificationCenter.default.addObserver(forName: .fontSizeChanged, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }
-            self.styler.fontSize = Settings.fontSize
-            self.restyle()
-        }
+        // Selector-based, so AppKit removes the observer by itself when the controller goes away.
+        NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .fontSizeChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(applyTextPrefs), name: .textPrefsChanged, object: nil)
         isConfigured = true
+    }
+
+    /// Spell checking and the system's text replacements, as set in the Edit menu.
+    @objc private func applyTextPrefs() {
+        textView.isContinuousSpellCheckingEnabled = Settings.spellChecking
+        textView.isAutomaticTextReplacementEnabled = Settings.textReplacement
+        textView.isAutomaticSpellingCorrectionEnabled = Settings.autoCorrect
+    }
+
+    @objc private func fontSizeChanged() {
+        styler.fontSize = Settings.fontSize
+        restyle()
     }
 
     private func buildToolbar(in container: NSView) {
         trashButton = CircleButton(symbol: "trash", tip: "Delete note…", target: self, action: #selector(deleteNote))
-        pinButton = CircleButton(symbol: "pin", tip: "Pin options", target: self, action: #selector(showPinMenu(_:)))
-        let palette = CircleButton(symbol: "paintpalette", tip: "Colour", target: self, action: #selector(showThemeMenu(_:)))
+        pinButton = CircleButton(symbol: "pin", tip: "Pin and reminder", target: self, action: #selector(showPinMenu(_:)))
+        let palette = CircleButton(symbol: "paintpalette", tip: "Colour and opacity", target: self, action: #selector(showThemeMenu(_:)))
         let plus = CircleButton(symbol: "plus", tip: "New note (⌘N)", target: self, action: #selector(newNoteClicked))
         let close = CircleButton(symbol: "xmark", tip: "Hide note (⌘W)", target: self, action: #selector(hideClicked))
         buttons = [trashButton, pinButton, palette, plus, close]
 
+        // Two capsules of glass, like the grouped buttons of Finder's toolbar, with the date between.
+        let height: CGFloat = 40
+        func capsule(_ views: [CircleButton]) -> NSView {
+            let row = NSStackView(views: views)
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 2
+            row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+            let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
+            return Glass.capsule(around: row, width: width, height: height)
+        }
+        capsules = [capsule([trashButton, pinButton, palette]), capsule([plus, close])]
+
         dateLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         dateLabel.alignment = .center
-        dateLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        dateLabel.lineBreakMode = .byTruncatingTail
         dateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let dateRow = NSStackView(views: [dateLabel])
+        dateRow.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
+        let dateCapsule = Glass.capsule(around: dateRow, width: 80, height: height)
+        dateWidth = dateCapsule.constraints.first { $0.firstAttribute == .width }
+        dateWidth?.priority = .defaultHigh  // may shrink in a narrow note; the text then truncates
+        capsules.append(dateCapsule)
 
-        let stack = NSStackView(views: [trashButton, dateLabel, pinButton, palette, plus, close])
-        stack.orientation = .horizontal
-        stack.alignment = .centerY
-        stack.spacing = 6
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 7, bottom: 0, right: 7)
-        stack.translatesAutoresizingMaskIntoConstraints = false
+        // Equal flexible gaps on both sides keep the date centred.
+        let gapLeft = NSView(), gapRight = NSView()
+        for gap in [gapLeft, gapRight] {
+            gap.translatesAutoresizingMaskIntoConstraints = false
+            gap.setContentHuggingPriority(.init(1), for: .horizontal)
+            gap.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        }
+        let bar = NSStackView(views: [capsules[0], gapLeft, dateCapsule, gapRight, capsules[1]])
+        bar.orientation = .horizontal
+        bar.alignment = .centerY
+        bar.distribution = .fill
+        bar.spacing = 6
+        gapLeft.widthAnchor.constraint(equalTo: gapRight.widthAnchor).isActive = true
 
-        pill.material = .popover
-        pill.blendingMode = .withinWindow
-        pill.state = .active
-        pill.wantsLayer = true
-        pill.layer?.cornerRadius = 24
-        pill.layer?.masksToBounds = true
-        pill.layer?.borderWidth = 0.5
-        pill.layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        pill = Glass.group(bar)
         pill.translatesAutoresizingMaskIntoConstraints = false
-        pill.addSubview(stack)
         container.addSubview(pill)
-
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: pill.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: pill.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: pill.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: pill.bottomAnchor),
             pill.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
             pill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
             pill.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
-            pill.heightAnchor.constraint(equalToConstant: 48),
+            pill.heightAnchor.constraint(equalToConstant: height),
         ])
         pill.alphaValue = 0
         pill.isHidden = true
+    }
+
+    private func buildTimerBadge(in container: NSView) {
+        timerBadge.translatesAutoresizingMaskIntoConstraints = false
+        timerBadge.onClick = { [weak self] in self?.onTimerToggle?() }
+        timerBadge.onDoubleClick = { [weak self] in self?.onTimerStop?() }
+        container.addSubview(timerBadge)
+        NSLayoutConstraint.activate([
+            timerBadge.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            timerBadge.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+        ])
+    }
+
+    /// Shows the timer in the corner of this note, or removes it (nil).
+    func setTimerDisplay(_ display: TimerDisplay?) {
+        timerDisplay = display
+        timerBadge.update(display: display, theme: theme)
+    }
+
+    private func hoverChanged(_ inside: Bool) {
+        isMouseInside = inside
+        if !inside, popover != nil { return }  // the toolbar stays while its popover is open
+        setToolbarVisible(inside)
     }
 
     private func setToolbarVisible(_ visible: Bool, animated: Bool = true) {
@@ -255,7 +296,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
                 pill.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
                 // Hidden views don't swallow clicks meant for the text underneath.
-                if self?.pill.alphaValue == 0 { self?.pill.isHidden = true }
+                MainActor.assumeIsolated {  // AppKit calls this on the main thread
+                    if self?.pill.alphaValue == 0 { self?.pill.isHidden = true }
+                }
             })
         }
     }
@@ -263,16 +306,25 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     // MARK: Appearance
 
     private func applyTheme() {
-        window?.backgroundColor = theme.background
-        paper.fillColor = theme.background
         window?.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        backdrop.appearance = window?.appearance
+        applyOpacity()
         pill.appearance = window?.appearance
-        pill.layer?.borderColor = theme.text.withAlphaComponent(0.10).cgColor
+        capsules.forEach { Glass.setBorder(of: $0, to: theme.text.withAlphaComponent(0.10)) }
         dateLabel.textColor = theme.secondary
         textView.theme = theme
         styler.theme = theme
         buttons.forEach { $0.apply(theme: theme) }
+        timerBadge.update(display: timerDisplay, theme: theme)
         restyle()
+    }
+
+    /// Paper colour at the note's opacity; below 100 % the blurred desktop shows through.
+    private func applyOpacity() {
+        let opacity = store.notes[noteID]?.opacity ?? 1
+        tint.fillColor = theme.background.withAlphaComponent(opacity)
+        backdrop.isHidden = opacity >= 0.995
+        window?.invalidateShadow()
     }
 
     private func restyle() {
@@ -290,9 +342,19 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         pinButton?.setSymbol(active ? "pin.fill" : "pin")
     }
 
-    private func updateDate() {
-        let date = store.notes[noteID]?.modified ?? Date()
-        dateLabel.stringValue = Self.dateFormatter.string(from: date)
+    /// The toolbar shows the reminder while one is set, otherwise the date of the last edit.
+    func updateDate() {
+        let note = store.notes[noteID]
+        if let reminder = note?.reminder {
+            dateLabel.stringValue = "🔔 " + Reminders.format(reminder)
+            dateLabel.toolTip = "Reminder: " + Reminders.format(reminder)
+        } else {
+            let date = note?.modified ?? Date()
+            let sameYear = Calendar.current.component(.year, from: date) == Calendar.current.component(.year, from: Date())
+            dateLabel.stringValue = (sameYear ? Self.shortDate : Self.longDate).string(from: date)
+            dateLabel.toolTip = "Last edited " + Reminders.format(date)
+        }
+        dateWidth?.constant = max(64, ceil(dateLabel.attributedStringValue.size().width) + 28)
     }
 
     // MARK: Show / hide
@@ -335,7 +397,20 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             item.state = candidate.id == theme.id ? .on : .off
             menu.addItem(item)
         }
+
+        menu.addItem(.separator())
+        let row = NSMenuItem()
+        let slider = OpacitySliderView(opacity: store.notes[noteID]?.opacity ?? 1)
+        slider.onChange = { [weak self] value in self?.setOpacity(value) }
+        row.view = slider
+        menu.addItem(row)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    private func setOpacity(_ value: Double) {
+        let opacity = Note.clampOpacity(value)
+        store.update(noteID, touch: false) { $0.opacity = opacity }
+        applyOpacity()
     }
 
     @objc private func themeChosen(_ sender: NSMenuItem) {
@@ -356,8 +431,96 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         spaces.state = (note?.allSpaces ?? false) ? .on : .off
         menu.addItem(float)
         menu.addItem(spaces)
+
+        menu.addItem(.separator())
+        if let due = note?.reminder {
+            let info = NSMenuItem(title: "Reminder: " + Reminders.format(due), action: nil, keyEquivalent: "")
+            info.isEnabled = false
+            menu.addItem(info)
+            for (title, action) in [("Change Reminder…", #selector(remindMe)), ("Remove Reminder", #selector(clearReminder))] {
+                let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+                item.target = self
+                menu.addItem(item)
+            }
+        } else {
+            let remind = NSMenuItem(title: "Remind Me…", action: #selector(remindMe), keyEquivalent: "")
+            remind.target = self
+            menu.addItem(remind)
+        }
+
+        // Nine slots: ⌥⌘1 to ⌥⌘9 open the note in a slot from anywhere.
+        menu.addItem(.separator())
+        let slots = NSMenu()
+        for slot in Note.slotRange {
+            let holder = store.note(inSlot: slot)
+            let suffix = holder.map { $0.id == noteID ? "" : "  (\($0.title))" } ?? ""
+            let item = NSMenuItem(title: "Slot \(slot)  ⌥⌘\(slot)\(suffix)", action: #selector(slotChosen(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = slot
+            item.state = note?.slot == slot ? .on : .off
+            slots.addItem(item)
+        }
+        if note?.slot != nil {
+            slots.addItem(.separator())
+            let remove = NSMenuItem(title: "Remove from Slot", action: #selector(slotChosen(_:)), keyEquivalent: "")
+            remove.target = self
+            remove.tag = 0
+            slots.addItem(remove)
+        }
+        let slotItem = NSMenuItem(title: note?.slot.map { "Kept in Slot \($0)" } ?? "Keep in Slot", action: nil, keyEquivalent: "")
+        slotItem.submenu = slots
+        menu.addItem(slotItem)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }
+
+    @objc private func slotChosen(_ sender: NSMenuItem) {
+        onSetSlot?(noteID, sender.tag == 0 ? nil : sender.tag)
+    }
+
+    /// Opens the reminder popover above the toolbar: a notification about this note appears then.
+    @objc func remindMe() {
+        if popover != nil { closePopover(); return }
+        let note = store.notes[noteID]
+        let view = ReminderView(
+            noteTitle: note?.title ?? "",
+            existing: note?.reminder,
+            onSet: { [weak self] date in
+                guard let self else { return }
+                self.closePopover()
+                self.onSetReminder?(self.noteID, date)
+            },
+            onRemove: { [weak self] in
+                guard let self else { return }
+                self.closePopover()
+                self.onClearReminder?(self.noteID)
+            })
+        let host = NSHostingController(rootView: view)
+        host.sizingOptions = [.preferredContentSize]  // the popover is as big as the view needs
+        present(host)
+    }
+
+    /// Shows `content` in a popover on the pin button, bringing the note and its toolbar up first.
+    private func present(_ content: NSViewController) {
+        if !isShown { show(focus: true) } else { window?.makeKeyAndOrderFront(nil) }
+        setToolbarVisible(true, animated: false)
+        let popover = NSPopover()
+        popover.contentViewController = content
+        popover.behavior = .transient  // closes when you click elsewhere
+        popover.delegate = self
+        self.popover = popover
+        popover.show(relativeTo: pinButton.bounds, of: pinButton, preferredEdge: .maxY)
+    }
+
+    private func closePopover() {
+        popover?.close()
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        popover = nil
+        if !isMouseInside { setToolbarVisible(false) }
+    }
+
+    @objc private func clearReminder() { onClearReminder?(noteID) }
 
     @objc private func toggleFloating() { setFloating(!(store.notes[noteID]?.floats ?? false)) }
     @objc private func toggleAllSpaces() { setAllSpaces(!(store.notes[noteID]?.allSpaces ?? false)) }
@@ -418,6 +581,13 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     // MARK: NSTextViewDelegate
 
+    /// Don't underline things that aren't prose: mode keywords, variable names, code, link targets.
+    func textView(_ textView: NSTextView, shouldSetSpellingState value: Int, range affectedCharRange: NSRange) -> Int {
+        guard value != 0, affectedCharRange.location < storage.length else { return value }
+        let skipped = storage.attribute(.deskNoSpell, at: affectedCharRange.location, effectiveRange: nil) != nil
+        return skipped ? 0 : value
+    }
+
     func textDidChange(_ notification: Notification) {
         let text = textView.string
         store.update(noteID) { $0.text = text }
@@ -425,6 +595,11 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     // MARK: Snapshot (`DeskNotes --snapshot <dir>`)
+
+    /// Puts the caret at the end of the text, as if you had just typed it (shows the timer help).
+    func placeCaretAtEnd() {
+        textView.setSelectedRange(NSRange(location: (textView.string as NSString).length, length: 0))
+    }
 
     /// Renders the note as it looks on screen, for checking the design without a screenshot.
     func snapshotPNG(showToolbar: Bool) -> Data? {

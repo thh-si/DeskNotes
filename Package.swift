@@ -1,4 +1,5 @@
-// swift-tools-version:5.9
+// swift-tools-version:6.0
+// Swift 6 language mode: data races are compile errors. UI and storage code is @MainActor.
 import PackageDescription
 
 let package = Package(
@@ -11,6 +12,7 @@ let package = Package(
         // `swift run CoreChecks` – assertions for the calculator (no XCTest needed).
         .executableTarget(name: "CoreChecks", dependencies: ["NotesCore"]),
         // Draws the app icon: `swift run IconMaker <output-dir>` (build.sh does this once).
-        .executableTarget(name: "IconMaker"),
+        // A one-off drawing script built on top-level state; it stays in Swift 5 mode.
+        .executableTarget(name: "IconMaker", swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

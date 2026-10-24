@@ -35,6 +35,8 @@ struct NoteTheme {
     var teal: NSColor { pick(0x3E8A8A, 0x6CCBC4) }
     var sage: NSColor { pick(0x4F7B66, 0x8FC4A8) }
     var purple: NSColor { pick(0xB257E8, 0xCF8CF5) }
+    /// `timer …` lines and the running timer.
+    var timerColor: NSColor { pick(0xF0A04B, 0xFFC070) }
     /// Calculator results.
     var resultColor: NSColor { pick(0x5CA52F, 0x8BD45B) }
 

@@ -2,47 +2,94 @@ import AppKit
 import NotesCore
 
 /// Owns all note windows and decides which are shown.
+@MainActor
 final class NoteManager {
-    let store = NoteStore.shared
+    let store: NoteStore
+    let reminders: ReminderCenter
+    let timers: TimerHub
     private var controllers: [UUID: NoteWindowController] = [:]
     private var hiddenByToggle: [UUID] = []
 
+    init(store: NoteStore = .shared, timers: TimerHub) {
+        self.store = store
+        self.timers = timers
+        reminders = ReminderCenter(store: store)
+        reminders.onShowNote = { [weak self] id in self?.show(id) }
+        reminders.onChanged = { [weak self] id in self?.controllers[id]?.updateDate() }
+    }
+
+    /// Shows the running timer on the note that started it, and on no other.
+    func refreshTimerBadges() {
+        let display = timers.display
+        for (id, controller) in controllers {
+            controller.setTimerDisplay(timers.originNote == id ? display : nil)
+        }
+    }
+
+    /// The window of the note you are working in, if any.
+    var frontController: NoteWindowController? {
+        NSApp.keyWindow?.windowController as? NoteWindowController
+    }
+
+    /// The first note. Every example in it works where it stands: click at the end of a line.
     static let welcome = """
-    math
+    # Welcome to DeskNotes
 
-    Welcome to DeskNotes. Notes stay on your desktop – ⌘W only hides one; bring it back from the menu bar icon.
+    Quick notes on your desktop, always one keystroke away.
 
-    Type a calculation, end the line with = and the result appears. Tab or Return writes it into the note:
+    ## Basics
+    - ⌥⌘N  new note, from any app
+    - ⌥⌘J  show or hide all notes
+    - ⌥⌘L  all notes: search and delete
+    - ⌘W  hide a note (the menu bar has it)
+    - Hover a note to see its toolbar
+
+    ## Calculate
+    End a line with = and the result appears. Tab or Return writes it into the note.
 
     89 * 3 =
     20% of 80 =
     100 + 20% =
 
-    Variables use a colon and can have spaces in their name:
+    Give a value a name with a colon:
 
     guests: 5
     cost per guest: $34
     guests * cost per guest =
 
-    # Modes
-    Start a note with one of these words on its own line:
-    list – a checklist, add /x to tick an item
-    sum – adds all numbers in the note
-    avg – their average
-    count – words, sentences, readability
+    ## Note types
+    Put one word alone on the first line:
 
-    ## Markdown
-    **bold**, *italic*, ~~strike~~, ==highlight==, `code`
-    {red|red}, {blue|blue}, {green|green}, {#FF8800|any #hex}
+    - list  a checklist, add /x to tick
+    - sum  adds every number
+    - avg  their average
+    - count  words and readability
 
-    ⌥⌘N new note · ⌥⌘J show / hide all · ⌘+ ⌘- text size
+    ## Timers
+    Click at the end of a line and press Return:
+
+    timer 5
+    timer 5:30 : laundry
+    timer pomo
+
+    Also timer p (pause), r (reset), s (stop) and breathe.
+
+    ## Reminders, slots, colour
+    - Pin button: remind me, or keep the note in a slot (⌥⌘1 to ⌥⌘9 opens it)
+    - Palette button: colour and opacity
+    - ⌘+ and ⌘-  text size
+
+    ## Formatting
+    **bold**  *italic*  ~~strike~~  ==mark==
+    `code`  [link](https://example.com)
+    {red|colour}  {#FF8800|any hex}
     """
 
     func restore() {
         store.load()
         if store.notes.isEmpty && !UserDefaults.standard.bool(forKey: "didShowWelcome") {
             UserDefaults.standard.set(true, forKey: "didShowWelcome")
-            _ = createNote(text: Self.welcome, size: CGSize(width: 420, height: 640))
+            _ = createNote(text: Self.welcome, size: CGSize(width: 440, height: 720))
         }
         for note in store.notes.values.sorted(by: { $0.created < $1.created }) {
             let controller = makeController(for: note)
@@ -55,7 +102,7 @@ final class NoteManager {
     }
 
     func newWelcomeNote() {
-        addNote(text: Self.welcome, size: CGSize(width: 420, height: 640))
+        addNote(text: Self.welcome, size: CGSize(width: 440, height: 720))
     }
 
     /// Adds a note to the store only (no window yet).
@@ -74,6 +121,25 @@ final class NoteManager {
 
     func show(_ id: UUID) {
         controllers[id]?.show(focus: true)
+    }
+
+    /// Deletes notes (their files go to the Trash). Used by the All Notes window.
+    func deleteNotes(_ ids: [UUID]) {
+        ids.forEach { delete($0) }
+    }
+
+    /// Puts a note in slot 1 to 9, or takes it out (nil).
+    func setSlot(_ slot: Int?, for id: UUID) {
+        store.assignSlot(slot, to: id)
+    }
+
+    /// Opens the note in a slot: ⌥⌘1 to ⌥⌘9 from anywhere.
+    func showSlot(_ slot: Int) {
+        guard let note = store.note(inSlot: slot) else {
+            NSSound.beep()
+            return
+        }
+        show(note.id)
     }
 
     func isShown(_ id: UUID) -> Bool { controllers[id]?.isShown ?? false }
@@ -97,6 +163,7 @@ final class NoteManager {
             controller.window?.orderOut(nil)
             controller.close()
         }
+        reminders.forget(id)
         store.remove(id)
     }
 
@@ -107,6 +174,12 @@ final class NoteManager {
         let controller = NoteWindowController(note: note, store: store)
         controller.onNewNote = { [weak self] in self?.newNote() }
         controller.onDelete = { [weak self] id in self?.delete(id) }
+        controller.onSetReminder = { [weak self] id, date in self?.reminders.set(id, at: date) }
+        controller.onClearReminder = { [weak self] id in self?.reminders.clear(id) }
+        controller.onSetSlot = { [weak self] id, slot in self?.setSlot(slot, for: id) }
+        controller.onTimerCommand = { [weak self] id, command in self?.timers.run(command, from: id) }
+        controller.onTimerToggle = { [weak self] in self?.timers.pauseOrResume() }
+        controller.onTimerStop = { [weak self] in self?.timers.stop() }
         controllers[note.id] = controller
         return controller
     }

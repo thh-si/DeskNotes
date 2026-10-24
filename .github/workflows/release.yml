@@ -1,0 +1,18 @@
+name: Release
+# Push a tag like v1.0.0 to build the disk image and attach it to a GitHub release.
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift run CoreChecks
+      - run: ./make-dmg.sh
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: build.noindex/*.dmg
+          generate_release_notes: true
