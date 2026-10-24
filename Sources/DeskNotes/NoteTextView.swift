@@ -16,6 +16,7 @@ final class NoteTextView: NSTextView {
     /// A `timer …` line was completed with Return.
     var onTimerCommand: ((TimerCommand) -> Void)?
     private let timerHint = TimerHintView()
+    private var wasEmpty = true
     var baseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
     /// Shown in an empty note. Short lines that wrap, so nothing is cut off in a narrow note.
     var placeholder = "Start typing…\n\nOr begin the first line with\n" + NoteMode.keywords.joined(separator: " · ")
@@ -243,6 +244,13 @@ final class NoteTextView: NSTextView {
 
     override func didChangeText() {
         super.didChangeText()
+        // The placeholder is drawn by hand, so AppKit doesn't know it must be erased: without this,
+        // a note going from empty to filled (a paste) or back keeps a ghost of it on screen.
+        let isEmpty = string.isEmpty
+        if isEmpty != wasEmpty {
+            wasEmpty = isEmpty
+            setNeedsDisplay(bounds)
+        }
         updateTimerHint()
     }
 
