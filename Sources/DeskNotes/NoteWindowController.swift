@@ -36,6 +36,8 @@ final class TintView: NSView {
 final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate, NSPopoverDelegate {
     let noteID: UUID
     var onNewNote: (() -> Void)?
+    var onSearch: (() -> Void)?
+    var settingsMenu: (() -> NSMenu)?
     var onDelete: ((UUID) -> Void)?
     var onSetReminder: ((UUID, Date) -> Void)?
     var onClearReminder: ((UUID) -> Void)?
@@ -53,6 +55,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     /// The toolbar: two glass capsules with the date between them.
     private var pill: NSView!
+    /// The top toolbar: settings and search on the left, new note and the front / back choice on the right.
+    private var topPill: NSView!
+    private var layerButton: CircleButton!
+    private var isDragResizing = false
     private var capsules: [NSView] = []
     private let dateLabel = NSTextField(labelWithString: "")
     /// The capsule behind the date; its width follows the text.
@@ -94,7 +100,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView = NoteTextView(frame: NSRect(origin: .zero, size: note.frame.size), textContainer: container)
 
         let window = NSWindow(contentRect: note.frame,
-                              styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+                              styleMask: [.titled, .closable, .fullSizeContentView],  // no .resizable: see WindowEdges.swift
                               backing: .buffered,
                               defer: false)
         super.init(window: window)
@@ -128,6 +134,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView.drawsBackground = false
         textView.allowsUndo = true
         textView.isRichText = false
+        // Writing Tools (macOS 15+) takes over a large selection and locks the editor: after ⌘A nothing
+        // reacts and the text is covered by its overlay. The notes draw their own results, so keep it off.
+        if #available(macOS 15.0, *) { textView.writingToolsBehavior = .none }
         textView.importsGraphics = false
         // Markdown needs literal characters: never smart quotes or "--" → "–".
         textView.isAutomaticQuoteSubstitutionEnabled = false
@@ -162,6 +171,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         container.addSubview(scroll)
         container.onHover = { [weak self] inside in self?.hoverChanged(inside) }
         window.contentView = container
+        addEdges(to: container)
         buildToolbar(in: container)
         buildTimerBadge(in: container)
         textView.onTimerCommand = { [weak self] command in
@@ -174,7 +184,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         textView.string = note.text
         textView.undoManager?.removeAllActions()
 
-        setFloating(note.floats, persist: false)
+        setLayer(floats: note.floats, behind: note.behind, persist: false)
         setAllSpaces(note.allSpaces, persist: false)
         applyTheme()
         updateDate()
@@ -201,9 +211,13 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         trashButton = CircleButton(symbol: "trash", tip: "Delete note…", target: self, action: #selector(deleteNote))
         pinButton = CircleButton(symbol: "pin", tip: "Pin and reminder", target: self, action: #selector(showPinMenu(_:)))
         let palette = CircleButton(symbol: "paintpalette", tip: "Colour and opacity", target: self, action: #selector(showThemeMenu(_:)))
-        let plus = CircleButton(symbol: "plus", tip: "New note (⌘N)", target: self, action: #selector(newNoteClicked))
         let close = CircleButton(symbol: "xmark", tip: "Hide note (⌘W)", target: self, action: #selector(hideClicked))
-        buttons = [trashButton, pinButton, palette, plus, close]
+        let settings = CircleButton(symbol: "slider.horizontal.3", tip: "Settings", target: self, action: #selector(showSettingsMenu(_:)))
+        let search = CircleButton(symbol: "magnifyingglass", tip: "Search Notes (⌘F)", target: self, action: #selector(searchClicked))
+        let plus = CircleButton(symbol: "square.and.pencil", tip: "New note (⌘N)", target: self, action: #selector(newNoteClicked))
+        layerButton = CircleButton(symbol: "square.3.layers.3d", tip: "In front of or behind other windows", target: self,
+                                   action: #selector(showLayerMenu(_:)))
+        buttons = [trashButton, pinButton, palette, close, settings, search, plus, layerButton]
 
         // Two capsules of glass, like the grouped buttons of Finder's toolbar, with the date between.
         let height: CGFloat = 40
@@ -216,7 +230,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
             return Glass.capsule(around: row, width: width, height: height)
         }
-        capsules = [capsule([trashButton, pinButton, palette]), capsule([plus, close])]
+        capsules = [capsule([trashButton, pinButton, palette]), capsule([close])]
 
         dateLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
         dateLabel.alignment = .center
@@ -254,6 +268,58 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         ])
         pill.alphaValue = 0
         pill.isHidden = true
+
+        // The top toolbar: two capsules, left and right.
+        let topLeft = capsule([settings, search]), topRight = capsule([plus, layerButton])
+        capsules += [topLeft, topRight]
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        let topBar = NSStackView(views: [topLeft, spacer, topRight])
+        topBar.orientation = .horizontal
+        topBar.alignment = .centerY
+        topBar.distribution = .fill
+        topPill = Glass.group(topBar)
+        topPill.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(topPill)
+        NSLayoutConstraint.activate([
+            topPill.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
+            topPill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            topPill.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+            topPill.heightAnchor.constraint(equalToConstant: height),
+        ])
+        topPill.alphaValue = 0
+        topPill.isHidden = true
+    }
+
+    /// Left, right and bottom resize the note; a strip along the top moves it.
+    private func addEdges(to container: NSView) {
+        let size = container.bounds.size
+        let t = ResizeEdgeView.thickness, c = ResizeEdgeView.corner, top = MoveStripView.height
+
+        let strip = MoveStripView(frame: NSRect(x: 0, y: size.height - top, width: size.width, height: top))
+        strip.autoresizingMask = [.width, .minYMargin]
+        container.addSubview(strip)
+
+        let specs: [(ResizeEdgeView.Edge, NSRect, NSView.AutoresizingMask)] = [
+            (.left, NSRect(x: 0, y: c, width: t, height: size.height - c - top), [.height, .maxXMargin]),
+            (.right, NSRect(x: size.width - t, y: c, width: t, height: size.height - c - top), [.height, .minXMargin]),
+            (.bottom, NSRect(x: c, y: 0, width: size.width - 2 * c, height: t), [.width, .maxYMargin]),
+            (.bottomLeft, NSRect(x: 0, y: 0, width: c, height: c), [.maxXMargin, .maxYMargin]),
+            (.bottomRight, NSRect(x: size.width - c, y: 0, width: c, height: c), [.minXMargin, .maxYMargin]),
+        ]
+        for (edge, frame, mask) in specs {
+            let view = ResizeEdgeView(edge: edge)
+            view.frame = frame
+            view.autoresizingMask = mask
+            view.onBegin = { [weak self] in self?.isDragResizing = true }
+            view.onEnd = { [weak self] in
+                self?.isDragResizing = false
+                self?.restyleForNewWidth()
+            }
+            container.addSubview(view)
+        }
     }
 
     private func buildTimerBadge(in container: NSView) {
@@ -280,24 +346,26 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private func setToolbarVisible(_ visible: Bool, animated: Bool = true) {
+        let pills: [NSView] = [pill, topPill]
         if visible {
-            pill.isHidden = false
+            pills.forEach { $0.isHidden = false }
             if animated {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.15
-                    pill.animator().alphaValue = 1
+                    pills.forEach { $0.animator().alphaValue = 1 }
                 }
             } else {
-                pill.alphaValue = 1
+                pills.forEach { $0.alphaValue = 1 }
             }
         } else {
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = 0.2
-                pill.animator().alphaValue = 0
+                pills.forEach { $0.animator().alphaValue = 0 }
             }, completionHandler: { [weak self] in
                 // Hidden views don't swallow clicks meant for the text underneath.
                 MainActor.assumeIsolated {  // AppKit calls this on the main thread
-                    if self?.pill.alphaValue == 0 { self?.pill.isHidden = true }
+                    guard let self else { return }
+                    for view in [self.pill, self.topPill] where view?.alphaValue == 0 { view?.isHidden = true }
                 }
             })
         }
@@ -310,6 +378,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         backdrop.appearance = window?.appearance
         applyOpacity()
         pill.appearance = window?.appearance
+        topPill.appearance = window?.appearance
         capsules.forEach { Glass.setBorder(of: $0, to: theme.text.withAlphaComponent(0.10)) }
         dateLabel.textColor = theme.secondary
         textView.theme = theme
@@ -340,6 +409,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         let note = store.notes[noteID]
         let active = (note?.floats ?? false) || (note?.allSpaces ?? false)
         pinButton?.setSymbol(active ? "pin.fill" : "pin")
+        layerButton?.setSymbol((note?.floats ?? false) ? "square.3.layers.3d.top.filled"
+                               : (note?.behind ?? false) ? "square.3.layers.3d.bottom.filled" : "square.3.layers.3d")
     }
 
     /// The toolbar shows the reminder while one is set, otherwise the date of the last edit.
@@ -385,6 +456,34 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     // MARK: Actions
 
     @objc private func newNoteClicked() { onNewNote?() }
+    @objc private func searchClicked() { onSearch?() }
+
+    @objc private func showSettingsMenu(_ sender: NSButton) {
+        let menu = settingsMenu?() ?? NSMenu()
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    /// In front of other apps, as usual, or sunk onto the desktop behind everything.
+    @objc private func showLayerMenu(_ sender: NSButton) {
+        let note = store.notes[noteID]
+        let menu = NSMenu()
+        let choices: [(String, Selector, Bool)] = [
+            ("In Front of Other Apps", #selector(layerFront), note?.floats ?? false),
+            ("Normal", #selector(layerNormal), !(note?.floats ?? false) && !(note?.behind ?? false)),
+            ("Behind Other Apps (on the Desktop)", #selector(layerBehind), note?.behind ?? false),
+        ]
+        for (title, action, on) in choices {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.state = on ? .on : .off
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
+    }
+
+    @objc private func layerFront() { setLayer(floats: true, behind: false) }
+    @objc private func layerNormal() { setLayer(floats: false, behind: false) }
+    @objc private func layerBehind() { setLayer(floats: false, behind: true) }
     @objc private func hideClicked() { hide() }
 
     @objc private func showThemeMenu(_ sender: NSButton) {
@@ -522,12 +621,14 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     @objc private func clearReminder() { onClearReminder?(noteID) }
 
-    @objc private func toggleFloating() { setFloating(!(store.notes[noteID]?.floats ?? false)) }
+    @objc private func toggleFloating() { setLayer(floats: !(store.notes[noteID]?.floats ?? false), behind: false) }
     @objc private func toggleAllSpaces() { setAllSpaces(!(store.notes[noteID]?.allSpaces ?? false)) }
 
-    private func setFloating(_ on: Bool, persist: Bool = true) {
-        window?.level = on ? .floating : .normal
-        if persist { store.update(noteID, touch: false) { $0.floats = on } }
+    /// Window level: above other apps, normal, or just above the desktop icons (behind every other window).
+    private func setLayer(floats: Bool, behind: Bool, persist: Bool = true) {
+        let desktop = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
+        window?.level = floats ? .floating : (behind ? desktop : .normal)
+        if persist { store.update(noteID, touch: false) { $0.floats = floats; $0.behind = behind } }
         updatePinIcon()
     }
 
@@ -564,7 +665,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func windowDidResize(_ notification: Notification) {
         saveFrame()
         // During a drag, restyle once at the end instead of on every step.
-        if window?.inLiveResize != true { restyleForNewWidth() }
+        if window?.inLiveResize != true, !isDragResizing { restyleForNewWidth() }
     }
 
     func windowDidEndLiveResize(_ notification: Notification) { restyleForNewWidth() }

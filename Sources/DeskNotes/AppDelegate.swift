@@ -46,6 +46,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Notifier.shared.start()  // first, so a click on a notification that launched us is received
         buildMainMenu()
         buildStatusItem()
+        manager.onSearch = { [weak self] in self?.showLibrary() }
+        manager.settingsMenu = { [weak self] in self?.makeSettingsMenu() ?? NSMenu() }
         manager.restore()
         Task { await manager.reminders.start() }
 
@@ -222,6 +224,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func showLibrary() { library.show() }
+
+    /// The menu behind the settings button of a note.
+    func makeSettingsMenu() -> NSMenu {
+        let menu = NSMenu(title: "Settings")
+        func add(_ title: String, _ action: Selector, on: Bool? = nil, key: String = "") {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            item.target = self
+            if let on { item.state = on ? .on : .off }
+            menu.addItem(item)
+        }
+        add("Bigger Text", #selector(biggerText), key: "+")
+        add("Smaller Text", #selector(smallerText), key: "-")
+        menu.addItem(.separator())
+        add("Check Spelling While Typing", #selector(toggleSpelling), on: Settings.spellChecking)
+        add("Use Text Replacements", #selector(toggleReplacements), on: Settings.textReplacement)
+        add("Correct Spelling Automatically", #selector(toggleAutocorrect), on: Settings.autoCorrect)
+        menu.addItem(.separator())
+        add("Launch at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
+        add("New Welcome Note", #selector(newWelcomeNote))
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit DeskNotes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        menu.addItem(quit)
+        return menu
+    }
+
+    @objc private func toggleSpelling() { Settings.spellChecking.toggle() }
+    @objc private func toggleReplacements() { Settings.textReplacement.toggle() }
+    @objc private func toggleAutocorrect() { Settings.autoCorrect.toggle() }
     @objc private func newNote() { manager.newNote() }
     @objc private func toggleAll() { manager.toggleAll() }
     @objc private func newWelcomeNote() { manager.newWelcomeNote() }
@@ -277,6 +307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         submenu("File", [
             item("New Note", #selector(newNote), "n", target: self),
             item("All Notes…", #selector(showLibrary), "l", [.command, .option], target: self),
+            item("Search Notes…", #selector(showLibrary), "f", target: self),
             item("Hide Note", #selector(NSWindow.performClose(_:)), "w"),
             item("Remind Me…", #selector(remindFrontNote), "r", [.command, .option], target: self),
             // ⌥⌘⌫, not ⌘⌫: in text, ⌘⌫ means "delete to the start of the line".

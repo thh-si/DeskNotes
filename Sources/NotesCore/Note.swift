@@ -16,6 +16,8 @@ public struct Note: Codable, Sendable {
     public var isVisible = true
     /// Float above other apps' windows.
     public var floats = false
+    /// Sink below the other apps' windows, onto the desktop (the opposite of `floats`).
+    public var behind = false
     /// Show on every desktop (Space).
     public var allSpaces = false
     public var created = Date()
@@ -59,6 +61,7 @@ public struct Note: Codable, Sendable {
         frame = try c.decodeIfPresent(CGRect.self, forKey: .frame) ?? defaults.frame
         isVisible = try c.decodeIfPresent(Bool.self, forKey: .isVisible) ?? defaults.isVisible
         floats = try c.decodeIfPresent(Bool.self, forKey: .floats) ?? defaults.floats
+        behind = try c.decodeIfPresent(Bool.self, forKey: .behind) ?? defaults.behind
         allSpaces = try c.decodeIfPresent(Bool.self, forKey: .allSpaces) ?? defaults.allSpaces
         created = try c.decodeIfPresent(Date.self, forKey: .created) ?? defaults.created
         modified = try c.decodeIfPresent(Date.self, forKey: .modified) ?? defaults.modified
