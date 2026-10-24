@@ -1,15 +1,21 @@
 name: Release
 # Push a tag like v1.0.0 to build the disk image and attach it to a GitHub release.
 on:
+  workflow_dispatch:
   push:
     tags: ["v*"]
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      # Use the newest Xcode on the runner: the code is written for a recent Swift.
+      - run: |
+          XCODE="$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          sudo xcode-select -s "$XCODE"
+          swift --version
       - run: swift run CoreChecks
       - run: ./make-dmg.sh
       - uses: softprops/action-gh-release@v2
