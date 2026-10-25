@@ -40,18 +40,31 @@ if [ -z "${SIGN_IDENTITY:-}" ]; then
 DeskNotes
 =========
 
-1. Drag DeskNotes onto the Applications folder.
-2. The first time, macOS may say it cannot verify the developer, because this app is not
-   from the App Store. To open it anyway:
+DeskNotes is free and not notarized by Apple (that needs a paid developer account), so macOS
+blocks the first launch. This takes a minute, once.
 
-   - Right-click (or Control-click) DeskNotes in Applications, choose Open, then Open again.
-   or
-   - System Settings > Privacy & Security > scroll down > "Open Anyway".
-   or, in Terminal:   xattr -dr com.apple.quarantine /Applications/DeskNotes.app
+1. Drag DeskNotes onto the Applications folder. Then eject this disk image.
+   Don't open DeskNotes from here, only from Applications.
 
-You only need to do this once.
+2. Open DeskNotes from Applications. macOS says it "can't be opened" or that it could not
+   verify DeskNotes. Click "Done" - NOT "Move to Trash".
 
-DeskNotes lives in the menu bar (look for the small screen with a note in it). Option-Command-N makes a new note.
+3. Open System Settings > Privacy & Security and scroll down to "Security". Next to
+   "DeskNotes was blocked..." click "Open Anyway", confirm with your password or Touch ID,
+   then click "Open Anyway" once more.
+   (The button only shows up for a while after step 2. If it's gone, repeat step 2.)
+
+   Or instead of steps 2 and 3, paste this into Terminal and press Return:
+
+       xattr -dr com.apple.quarantine /Applications/DeskNotes.app && open /Applications/DeskNotes.app
+
+   On macOS 13 and 14, right-click DeskNotes in Applications > Open > Open works too.
+
+The very first start can take a few seconds while macOS checks the app.
+
+DeskNotes has no Dock icon. It opens a welcome note and lives in the menu bar (a small screen
+with a note in it; on a MacBook with many menu bar icons it can hide behind the camera notch).
+Option-Command-N makes a new note, Option-Command-J shows or hides all notes.
 Allow notifications when asked, so reminders and the Pomodoro timer can reach you.
 EOF
 fi

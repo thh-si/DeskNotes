@@ -89,14 +89,20 @@ final class NoteManager {
 
     func restore() {
         store.load()
+        var welcome: UUID?
         if store.notes.isEmpty && !UserDefaults.standard.bool(forKey: "didShowWelcome") {
-            UserDefaults.standard.set(true, forKey: "didShowWelcome")
-            _ = createNote(text: Self.welcome, size: CGSize(width: 440, height: 720))
+            welcome = createNote(text: Self.welcome, size: CGSize(width: 440, height: 720)).id
+            // On disk before it counts as shown: a first launch that is cut short (macOS checking the
+            // download, a force quit) would otherwise leave a later launch with nothing to show.
+            store.flush()
+            if !store.hasUnsavedChanges { UserDefaults.standard.set(true, forKey: "didShowWelcome") }
         }
         for note in store.notes.values.sorted(by: { $0.created < $1.created }) {
             let controller = makeController(for: note)
             if note.isVisible { controller.show(focus: false) }
         }
+        // A menu bar app has no Dock icon or window to show it started: put the welcome note in front.
+        if let welcome { show(welcome) }
     }
 
     func newNote() {

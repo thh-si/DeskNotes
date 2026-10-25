@@ -5,10 +5,19 @@ coloured text, an inline calculator, checklists, timers and reminders. Notes sta
 
 ## Install
 
-1. Download `DeskNotes-<version>.dmg` from the [Releases](../../releases) page and drag DeskNotes to Applications.
-2. The app is not notarized (that needs a paid Apple Developer account), so macOS blocks the first launch.
-   Either right-click the app, choose **Open**, then **Open** again, or run:
-   `xattr -dr com.apple.quarantine /Applications/DeskNotes.app`
+1. Download `DeskNotes-<version>.dmg` from the [Releases](../../releases) page, drag DeskNotes to
+   Applications and eject the disk image. Open DeskNotes from Applications, not from the disk image.
+2. The app is not notarized (that needs a paid Apple Developer account), so macOS blocks the first launch
+   and offers **Move to Trash**. Click **Done** instead, then go to **System Settings › Privacy & Security**,
+   click **Open Anyway** next to "DeskNotes was blocked", confirm, and click **Open Anyway** again.
+   Right-click › **Open** no longer does this on macOS 15 and later. Or run this once in Terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/DeskNotes.app && open /Applications/DeskNotes.app
+   ```
+
+3. DeskNotes has no Dock icon: it opens a welcome note and lives in the menu bar (on a crowded MacBook
+   menu bar the icon can hide behind the notch). ⌥⌘N makes a new note, ⌥⌘J shows or hides all notes.
 
 Needs macOS 13 or newer. Apple Silicon and Intel.
 

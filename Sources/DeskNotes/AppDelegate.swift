@@ -31,6 +31,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSRunningApplication.runningApplications(withBundleIdentifier: id)
                 .filter { $0 != NSRunningApplication.current && !$0.isTerminated }
         } ?? []
+        // A copy opened from the disk image (or run by macOS from a temporary quarantine location)
+        // gives way to the installed one, so the copy dragged to Applications is the one that runs.
+        if !Self.isTemporaryCopy(Bundle.main.bundleURL), others.contains(where: { $0.bundleURL.map(Self.isTemporaryCopy) ?? false }) {
+            DistributedNotificationCenter.default().postNotificationName(Self.yieldRequest, object: nil, userInfo: nil,
+                                                                         deliverImmediately: true)
+        }
         if others.isEmpty {
             start()
         } else if Date() >= deadline {
@@ -45,8 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// On a mounted disk image, or moved by macOS to a random read-only folder because the download
+    /// was not yet allowed (App Translocation).
+    private static func isTemporaryCopy(_ url: URL) -> Bool {
+        url.path.hasPrefix("/Volumes/") || url.path.contains("/AppTranslocation/")
+    }
+
     /// Sent by a second copy of the app that is about to quit, to the copy that keeps running.
     private static let reopenRequest = Notification.Name("local.desknotes.reopen")
+    /// Sent by the installed copy to a temporary one (see `isTemporaryCopy`), which then quits.
+    private static let yieldRequest = Notification.Name("local.desknotes.yield")
 
     /// Opening the app while it runs (Finder, Spotlight, the Dock) shows a note instead of nothing.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -57,6 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func start() {
         DistributedNotificationCenter.default().addObserver(forName: Self.reopenRequest, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.manager.bringUp() }
+        }
+        if Self.isTemporaryCopy(Bundle.main.bundleURL) {
+            DistributedNotificationCenter.default().addObserver(forName: Self.yieldRequest, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { NSApp.terminate(nil) }
+            }
         }
         Notifier.shared.start()  // first, so a click on a notification that launched us is received
         buildMainMenu()
