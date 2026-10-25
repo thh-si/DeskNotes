@@ -245,7 +245,8 @@ final class MarkdownStyler: NSObject, @preconcurrency NSTextStorageDelegate {
             // A plain loop, not enumerateMatches with a closure: the compiler on GitHub's build machines
             // rejects handing `body` to that closure as a data race.
             for m in re.matches(in: string, options: [], range: line) {
-                if protected.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) { continue }
+                let matched = m.range  // an NSRange is a plain value; the closure then captures no non-Sendable object
+                if protected.contains(where: { NSIntersectionRange($0, matched).length > 0 }) { continue }
                 body(m)
             }
         }
