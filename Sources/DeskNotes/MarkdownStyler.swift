@@ -242,9 +242,10 @@ final class MarkdownStyler: NSObject, @preconcurrency NSTextStorageDelegate {
         var protected: [NSRange] = []
 
         func each(_ re: NSRegularExpression, _ body: (NSTextCheckingResult) -> Void) {
-            re.enumerateMatches(in: string, options: [], range: line) { match, _, _ in
-                guard let m = match else { return }
-                if protected.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) { return }
+            // A plain loop, not enumerateMatches with a closure: the compiler on GitHub's build machines
+            // rejects handing `body` to that closure as a data race.
+            for m in re.matches(in: string, options: [], range: line) {
+                if protected.contains(where: { NSIntersectionRange($0, m.range).length > 0 }) { continue }
                 body(m)
             }
         }
