@@ -47,7 +47,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         buildMainMenu()
         buildStatusItem()
         manager.onSearch = { [weak self] in self?.showLibrary() }
-        manager.settingsMenu = { [weak self] in self?.makeSettingsMenu() ?? NSMenu() }
         manager.restore()
         Task { await manager.reminders.start() }
 
@@ -175,26 +174,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(pomodoroItem())
 
-        let notes = manager.store.notes.values.sorted { $0.modified > $1.modified }
+        // Text and checking options (every note follows them).
         menu.addItem(.separator())
-        if notes.isEmpty {
-            let none = NSMenuItem(title: "No notes yet", action: nil, keyEquivalent: "")
-            none.isEnabled = false
-            menu.addItem(none)
-        } else {
-            let header = NSMenuItem(title: "Notes", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            for note in notes.prefix(20) {
-                let bell = note.reminder.map { "  🔔 " + Reminders.format($0) } ?? ""
-                let item = NSMenuItem(title: note.title + bell, action: #selector(showNote(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = note.id
-                item.image = NoteTheme.named(note.themeID).swatch
-                item.state = manager.isShown(note.id) ? .on : .off
-                menu.addItem(item)
-            }
+        func option(_ title: String, _ action: Selector, on: Bool? = nil) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            if let on { item.state = on ? .on : .off }
+            menu.addItem(item)
         }
+        let size = NSMenuItem(title: "Text Size: \(Int(Settings.fontSize)) pt", action: nil, keyEquivalent: "")
+        size.isEnabled = false
+        menu.addItem(size)
+        option("Bigger Text", #selector(biggerText))
+        option("Smaller Text", #selector(smallerText))
+        option("Check Spelling While Typing", #selector(toggleSpelling), on: Settings.spellChecking)
+        option("Use Text Replacements", #selector(toggleReplacements), on: Settings.textReplacement)
+        option("Correct Spelling Automatically", #selector(toggleAutocorrect), on: Settings.autoCorrect)
 
         menu.addItem(.separator())
         let welcome = NSMenuItem(title: "New Welcome Note", action: #selector(newWelcomeNote), keyEquivalent: "")
@@ -225,41 +220,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func showLibrary() { library.show() }
 
-    /// The menu behind the settings button of a note.
-    func makeSettingsMenu() -> NSMenu {
-        let menu = NSMenu(title: "Settings")
-        func add(_ title: String, _ action: Selector, on: Bool? = nil, key: String = "") {
-            let item = NSMenuItem(title: title, action: action, keyEquivalent: key)
-            item.target = self
-            if let on { item.state = on ? .on : .off }
-            menu.addItem(item)
-        }
-        add("Bigger Text", #selector(biggerText), key: "+")
-        add("Smaller Text", #selector(smallerText), key: "-")
-        menu.addItem(.separator())
-        add("Check Spelling While Typing", #selector(toggleSpelling), on: Settings.spellChecking)
-        add("Use Text Replacements", #selector(toggleReplacements), on: Settings.textReplacement)
-        add("Correct Spelling Automatically", #selector(toggleAutocorrect), on: Settings.autoCorrect)
-        menu.addItem(.separator())
-        add("Launch at Login", #selector(toggleLogin), on: SMAppService.mainApp.status == .enabled)
-        add("New Welcome Note", #selector(newWelcomeNote))
-        menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit DeskNotes", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
-        menu.addItem(quit)
-        return menu
-    }
-
     @objc private func toggleSpelling() { Settings.spellChecking.toggle() }
     @objc private func toggleReplacements() { Settings.textReplacement.toggle() }
     @objc private func toggleAutocorrect() { Settings.autoCorrect.toggle() }
     @objc private func newNote() { manager.newNote() }
     @objc private func toggleAll() { manager.toggleAll() }
     @objc private func newWelcomeNote() { manager.newWelcomeNote() }
-
-    @objc private func showNote(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? UUID else { return }
-        manager.show(id)
-    }
 
     @objc private func toggleLogin() {
         do {

@@ -9,9 +9,8 @@ final class NoteManager {
     let timers: TimerHub
     private var controllers: [UUID: NoteWindowController] = [:]
     private var hiddenByToggle: [UUID] = []
-    /// Set by the app: the All Notes window, and the menu behind the settings button of a note.
+    /// Set by the app: opens the All Notes window.
     var onSearch: (() -> Void)?
-    var settingsMenu: (() -> NSMenu)?
 
     init(store: NoteStore = .shared, timers: TimerHub) {
         self.store = store
@@ -177,7 +176,6 @@ final class NoteManager {
         let controller = NoteWindowController(note: note, store: store)
         controller.onNewNote = { [weak self] in self?.newNote() }
         controller.onSearch = { [weak self] in self?.onSearch?() }
-        controller.settingsMenu = { [weak self] in self?.settingsMenu?() ?? NSMenu() }
         controller.onDelete = { [weak self] id in self?.delete(id) }
         controller.onSetReminder = { [weak self] id, date in self?.reminders.set(id, at: date) }
         controller.onClearReminder = { [weak self] id in self?.reminders.clear(id) }

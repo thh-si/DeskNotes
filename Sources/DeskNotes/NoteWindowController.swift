@@ -37,7 +37,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     let noteID: UUID
     var onNewNote: (() -> Void)?
     var onSearch: (() -> Void)?
-    var settingsMenu: (() -> NSMenu)?
     var onDelete: ((UUID) -> Void)?
     var onSetReminder: ((UUID, Date) -> Void)?
     var onClearReminder: ((UUID) -> Void)?
@@ -53,9 +52,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private var theme: NoteTheme
     private var isConfigured = false
 
-    /// The toolbar along the bottom (note actions, close), and a small one in the top right corner.
+    /// The toolbar along the bottom: search and the note's options on the left, delete and close on the right.
     private var pill: NSView!
-    private var topPill: NSView!
     private var layerButton: CircleButton!
     private var capsules: [NSView] = []
     /// The popover that is open right now (reminder), if any. The toolbar stays while it is open.
@@ -196,16 +194,18 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     private func buildToolbar(in container: NSView) {
         trashButton = CircleButton(symbol: "trash", tip: "Delete note…", target: self, action: #selector(deleteNote))
-        pinButton = CircleButton(symbol: "pin", tip: "Pin and reminder", target: self, action: #selector(showPinMenu(_:)))
+        pinButton = CircleButton(symbol: "pin", tip: "Reminder and slot", target: self, action: #selector(showPinMenu(_:)))
         let palette = CircleButton(symbol: "paintpalette", tip: "Colour and opacity", target: self, action: #selector(showThemeMenu(_:)))
         layerButton = CircleButton(symbol: "square.3.layers.3d", tip: "In front of or behind other windows", target: self,
                                    action: #selector(showLayerMenu(_:)))
         let search = CircleButton(symbol: "magnifyingglass", tip: "Search Notes (⌘F)", target: self, action: #selector(searchClicked))
-        let settings = CircleButton(symbol: "slider.horizontal.3", tip: "Settings", target: self, action: #selector(showSettingsMenu(_:)))
         let close = CircleButton(symbol: "xmark", tip: "Hide note (⌘W)", target: self, action: #selector(hideClicked))
-        buttons = [trashButton, pinButton, palette, layerButton, search, settings, close]
+        buttons = [search, pinButton, palette, layerButton, trashButton, close]
 
-        let left: [CircleButton] = [trashButton, pinButton, palette, layerButton]
+        // Left to right: find notes, then what belongs to this note (reminder, colour, where it sits),
+        // then the two that take the note away.
+        let left: [CircleButton] = [search, pinButton, palette, layerButton]
+        let right: [CircleButton] = [trashButton, close]
         let height: CGFloat = 40
 
         // Capsules of glass, like the grouped buttons of Finder's toolbar.
@@ -218,14 +218,13 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
             return Glass.capsule(around: row, width: width, height: height)
         }
-        let actions = capsule(left), closing = capsule([close]), corner = capsule([settings, search])
-        capsules = [actions, closing, corner]
+        capsules = [capsule(left), capsule(right)]
 
         let gap = NSView()
         gap.translatesAutoresizingMaskIntoConstraints = false
         gap.setContentHuggingPriority(.init(1), for: .horizontal)
         gap.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let bar = NSStackView(views: [actions, gap, closing])
+        let bar = NSStackView(views: [capsules[0], gap, capsules[1]])
         bar.orientation = .horizontal
         bar.alignment = .centerY
         bar.distribution = .fill
@@ -242,17 +241,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         ])
         pill.alphaValue = 0
         pill.isHidden = true
-
-        // Settings (left) and search (right) in the top right corner.
-        topPill = Glass.group(corner)
-        topPill.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(topPill)
-        NSLayoutConstraint.activate([
-            topPill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            topPill.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-        ])
-        topPill.alphaValue = 0
-        topPill.isHidden = true
     }
 
     /// A strip along the top moves the note (the sides and bottom resize it, as in any macOS window).
@@ -287,7 +275,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private func setToolbarVisible(_ visible: Bool, animated: Bool = true) {
-        let pills: [NSView] = [pill, topPill]
+        let pills: [NSView] = [pill]
         if visible {
             pills.forEach { $0.isHidden = false }
             if animated {
@@ -306,7 +294,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
                 // Hidden views don't swallow clicks meant for the text underneath.
                 MainActor.assumeIsolated {  // AppKit calls this on the main thread
                     guard let self else { return }
-                    for view in [self.pill, self.topPill] where view?.alphaValue == 0 { view?.isHidden = true }
+                    if self.pill.alphaValue == 0 { self.pill.isHidden = true }
                 }
             })
         }
@@ -319,7 +307,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         backdrop.appearance = window?.appearance
         applyOpacity()
         pill.appearance = window?.appearance
-        topPill.appearance = window?.appearance
         capsules.forEach { Glass.setBorder(of: $0, to: theme.text.withAlphaComponent(0.10)) }
         textView.theme = theme
         styler.theme = theme
@@ -387,11 +374,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     @objc private func newNoteClicked() { onNewNote?() }
     @objc private func searchClicked() { onSearch?() }
-
-    @objc private func showSettingsMenu(_ sender: NSButton) {
-        let menu = settingsMenu?() ?? NSMenu()
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
-    }
 
     /// In front of other apps, as usual, or sunk onto the desktop behind everything.
     @objc private func showLayerMenu(_ sender: NSButton) {
