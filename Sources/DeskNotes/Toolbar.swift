@@ -75,6 +75,7 @@ final class CircleButton: NSButton {
     static let diameter: CGFloat = 32
 
     private var highlightColor = NSColor.clear
+    private var usesSystemGlass = false
     private var isHovering = false { didSet { needsDisplay = true } }
     private var area: NSTrackingArea?
 
@@ -82,8 +83,15 @@ final class CircleButton: NSButton {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
         self.target = target
         self.action = action
-        isBordered = false
         imagePosition = .imageOnly
+        if Glass.isAvailable, #available(macOS 26, *) {
+            // The system's own Liquid Glass button: the look, hover and press states all come from macOS.
+            bezelStyle = .glass
+            isBordered = true
+            usesSystemGlass = true
+        } else {
+            isBordered = false
+        }
         toolTip = tip
         setSymbol(symbol)
         translatesAutoresizingMaskIntoConstraints = false
@@ -122,7 +130,7 @@ final class CircleButton: NSButton {
 
     /// The highlight is drawn here: always a true circle, whatever size the stack gives us.
     override func draw(_ dirtyRect: NSRect) {
-        if isHovering || isHighlighted {
+        if !usesSystemGlass, isHovering || isHighlighted {
             let diameter = min(bounds.width, bounds.height)
             highlightColor.setFill()
             NSBezierPath(ovalIn: NSRect(x: bounds.midX - diameter / 2, y: bounds.midY - diameter / 2,

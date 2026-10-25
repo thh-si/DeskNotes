@@ -53,15 +53,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private var theme: NoteTheme
     private var isConfigured = false
 
-    /// The toolbar: two glass capsules with the date between them.
+    /// The toolbar along the bottom: note actions on the left, search, settings and close on the right.
     private var pill: NSView!
-    /// The top toolbar: settings and search on the left, new note and the front / back choice on the right.
-    private var topPill: NSView!
     private var layerButton: CircleButton!
     private var capsules: [NSView] = []
-    private let dateLabel = NSTextField(labelWithString: "")
-    /// The capsule behind the date; its width follows the text.
-    private var dateWidth: NSLayoutConstraint?
     /// The popover that is open right now (reminder), if any. The toolbar stays while it is open.
     private var popover: NSPopover?
     private var isMouseInside = false
@@ -74,14 +69,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     /// The running timer, when it was started from this note.
     private let timerBadge = TimerBadgeView(frame: .zero)
     private var timerDisplay: TimerDisplay?
-
-    private static func formatter(_ template: String) -> DateFormatter {
-        let f = DateFormatter()
-        f.setLocalizedDateFormatFromTemplate(template)
-        return f
-    }
-    private static let shortDate = formatter("dMMM")
-    private static let longDate = formatter("dMMMyyyy")
 
     init(note: Note, store: NoteStore) {
         self.noteID = note.id
@@ -187,7 +174,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         setLayer(floats: note.floats, behind: note.behind, persist: false)
         setAllSpaces(note.allSpaces, persist: false)
         applyTheme()
-        updateDate()
 
         // Selector-based, so AppKit removes the observer by itself when the controller goes away.
         NotificationCenter.default.addObserver(self, selector: #selector(fontSizeChanged), name: .fontSizeChanged, object: nil)
@@ -211,51 +197,46 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         trashButton = CircleButton(symbol: "trash", tip: "Delete note…", target: self, action: #selector(deleteNote))
         pinButton = CircleButton(symbol: "pin", tip: "Pin and reminder", target: self, action: #selector(showPinMenu(_:)))
         let palette = CircleButton(symbol: "paintpalette", tip: "Colour and opacity", target: self, action: #selector(showThemeMenu(_:)))
-        let close = CircleButton(symbol: "xmark", tip: "Hide note (⌘W)", target: self, action: #selector(hideClicked))
-        let settings = CircleButton(symbol: "slider.horizontal.3", tip: "Settings", target: self, action: #selector(showSettingsMenu(_:)))
-        let search = CircleButton(symbol: "magnifyingglass", tip: "Search Notes (⌘F)", target: self, action: #selector(searchClicked))
-        let plus = CircleButton(symbol: "square.and.pencil", tip: "New note (⌘N)", target: self, action: #selector(newNoteClicked))
         layerButton = CircleButton(symbol: "square.3.layers.3d", tip: "In front of or behind other windows", target: self,
                                    action: #selector(showLayerMenu(_:)))
-        buttons = [trashButton, pinButton, palette, close, settings, search, plus, layerButton]
+        let search = CircleButton(symbol: "magnifyingglass", tip: "Search Notes (⌘F)", target: self, action: #selector(searchClicked))
+        let settings = CircleButton(symbol: "slider.horizontal.3", tip: "Settings", target: self, action: #selector(showSettingsMenu(_:)))
+        let close = CircleButton(symbol: "xmark", tip: "Hide note (⌘W)", target: self, action: #selector(hideClicked))
+        buttons = [trashButton, pinButton, palette, layerButton, search, settings, close]
 
-        // Two capsules of glass, like the grouped buttons of Finder's toolbar, with the date between.
+        let left: [CircleButton] = [trashButton, pinButton, palette, layerButton]
+        let right: [CircleButton] = [search, settings, close]
+
         let height: CGFloat = 40
-        func capsule(_ views: [CircleButton]) -> NSView {
-            let row = NSStackView(views: views)
-            row.orientation = .horizontal
-            row.alignment = .centerY
-            row.spacing = 2
-            row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-            let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
-            return Glass.capsule(around: row, width: width, height: height)
-        }
-        capsules = [capsule([trashButton, pinButton, palette]), capsule([close])]
+        // Flexible space between the two groups.
+        let gap = NSView()
+        gap.translatesAutoresizingMaskIntoConstraints = false
+        gap.setContentHuggingPriority(.init(1), for: .horizontal)
+        gap.setContentCompressionResistancePriority(.init(1), for: .horizontal)
 
-        dateLabel.font = NSFont.systemFont(ofSize: 12, weight: .medium)
-        dateLabel.alignment = .center
-        dateLabel.lineBreakMode = .byTruncatingTail
-        dateLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let dateRow = NSStackView(views: [dateLabel])
-        dateRow.edgeInsets = NSEdgeInsets(top: 0, left: 12, bottom: 0, right: 12)
-        let dateCapsule = Glass.capsule(around: dateRow, width: 80, height: height)
-        dateWidth = dateCapsule.constraints.first { $0.firstAttribute == .width }
-        dateWidth?.priority = .defaultHigh  // may shrink in a narrow note; the text then truncates
-        capsules.append(dateCapsule)
-
-        // Equal flexible gaps on both sides keep the date centred.
-        let gapLeft = NSView(), gapRight = NSView()
-        for gap in [gapLeft, gapRight] {
-            gap.translatesAutoresizingMaskIntoConstraints = false
-            gap.setContentHuggingPriority(.init(1), for: .horizontal)
-            gap.setContentCompressionResistancePriority(.init(1), for: .horizontal)
+        let bar: NSStackView
+        if Glass.isAvailable {
+            // macOS 26: the system's own glass buttons, in a glass container as in Finder's toolbar.
+            bar = NSStackView(views: left + [gap] + right)
+            bar.spacing = 8
+        } else {
+            // Older systems: a frosted capsule around each group.
+            func capsule(_ views: [CircleButton]) -> NSView {
+                let row = NSStackView(views: views)
+                row.orientation = .horizontal
+                row.alignment = .centerY
+                row.spacing = 2
+                row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+                let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
+                return Glass.capsule(around: row, width: width, height: height)
+            }
+            capsules = [capsule(left), capsule(right)]
+            bar = NSStackView(views: [capsules[0], gap, capsules[1]])
+            bar.spacing = 6
         }
-        let bar = NSStackView(views: [capsules[0], gapLeft, dateCapsule, gapRight, capsules[1]])
         bar.orientation = .horizontal
         bar.alignment = .centerY
         bar.distribution = .fill
-        bar.spacing = 6
-        gapLeft.widthAnchor.constraint(equalTo: gapRight.widthAnchor).isActive = true
 
         pill = Glass.group(bar)
         pill.translatesAutoresizingMaskIntoConstraints = false
@@ -268,29 +249,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         ])
         pill.alphaValue = 0
         pill.isHidden = true
-
-        // The top toolbar: two capsules, left and right.
-        let topLeft = capsule([settings, search]), topRight = capsule([plus, layerButton])
-        capsules += [topLeft, topRight]
-        let spacer = NSView()
-        spacer.translatesAutoresizingMaskIntoConstraints = false
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        spacer.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-        let topBar = NSStackView(views: [topLeft, spacer, topRight])
-        topBar.orientation = .horizontal
-        topBar.alignment = .centerY
-        topBar.distribution = .fill
-        topPill = Glass.group(topBar)
-        topPill.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(topPill)
-        NSLayoutConstraint.activate([
-            topPill.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 14),
-            topPill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
-            topPill.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
-            topPill.heightAnchor.constraint(equalToConstant: height),
-        ])
-        topPill.alphaValue = 0
-        topPill.isHidden = true
     }
 
     /// A strip along the top moves the note (the sides and bottom resize it, as in any macOS window).
@@ -325,7 +283,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private func setToolbarVisible(_ visible: Bool, animated: Bool = true) {
-        let pills: [NSView] = [pill, topPill]
+        let pills: [NSView] = [pill]
         if visible {
             pills.forEach { $0.isHidden = false }
             if animated {
@@ -344,7 +302,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
                 // Hidden views don't swallow clicks meant for the text underneath.
                 MainActor.assumeIsolated {  // AppKit calls this on the main thread
                     guard let self else { return }
-                    for view in [self.pill, self.topPill] where view?.alphaValue == 0 { view?.isHidden = true }
+                    if self.pill.alphaValue == 0 { self.pill.isHidden = true }
                 }
             })
         }
@@ -357,9 +315,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         backdrop.appearance = window?.appearance
         applyOpacity()
         pill.appearance = window?.appearance
-        topPill.appearance = window?.appearance
         capsules.forEach { Glass.setBorder(of: $0, to: theme.text.withAlphaComponent(0.10)) }
-        dateLabel.textColor = theme.secondary
         textView.theme = theme
         styler.theme = theme
         buttons.forEach { $0.apply(theme: theme) }
@@ -388,26 +344,14 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     private func updatePinIcon() {
         let note = store.notes[noteID]
-        let active = (note?.floats ?? false) || (note?.allSpaces ?? false)
+        let active = (note?.floats ?? false) || (note?.allSpaces ?? false) || note?.reminder != nil
         pinButton?.setSymbol(active ? "pin.fill" : "pin")
         layerButton?.setSymbol((note?.floats ?? false) ? "square.3.layers.3d.top.filled"
                                : (note?.behind ?? false) ? "square.3.layers.3d.bottom.filled" : "square.3.layers.3d")
     }
 
-    /// The toolbar shows the reminder while one is set, otherwise the date of the last edit.
-    func updateDate() {
-        let note = store.notes[noteID]
-        if let reminder = note?.reminder {
-            dateLabel.stringValue = "🔔 " + Reminders.format(reminder)
-            dateLabel.toolTip = "Reminder: " + Reminders.format(reminder)
-        } else {
-            let date = note?.modified ?? Date()
-            let sameYear = Calendar.current.component(.year, from: date) == Calendar.current.component(.year, from: Date())
-            dateLabel.stringValue = (sameYear ? Self.shortDate : Self.longDate).string(from: date)
-            dateLabel.toolTip = "Last edited " + Reminders.format(date)
-        }
-        dateWidth?.constant = max(64, ceil(dateLabel.attributedStringValue.size().width) + 28)
-    }
+    /// A reminder was set or cleared: the pin shows it.
+    func refreshState() { updatePinIcon() }
 
     // MARK: Show / hide
 
@@ -673,7 +617,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func textDidChange(_ notification: Notification) {
         let text = textView.string
         store.update(noteID) { $0.text = text }
-        updateDate()
     }
 
     // MARK: Snapshot (`DeskNotes --snapshot <dir>`)

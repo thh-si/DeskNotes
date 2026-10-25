@@ -35,7 +35,7 @@ final class NoteTextView: NSTextView {
 
     // MARK: Layout
 
-    private let topPadding: CGFloat = 58       // room under the top toolbar
+    private let topPadding: CGFloat = 36       // room under the top edge, where the note is moved
     let sidePadding: CGFloat = 46
     private let bottomPadding: CGFloat = 80    // room for the hover toolbar
 

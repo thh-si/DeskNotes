@@ -18,7 +18,7 @@ final class NoteManager {
         self.timers = timers
         reminders = ReminderCenter(store: store)
         reminders.onShowNote = { [weak self] id in self?.show(id) }
-        reminders.onChanged = { [weak self] id in self?.controllers[id]?.updateDate() }
+        reminders.onChanged = { [weak self] id in self?.controllers[id]?.refreshState() }
     }
 
     /// Shows the running timer on the note that started it, and on no other.
