@@ -53,8 +53,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     private var theme: NoteTheme
     private var isConfigured = false
 
-    /// The toolbar along the bottom: note actions on the left, search, settings and close on the right.
+    /// The toolbar along the bottom (note actions, close), and a small one in the top right corner.
     private var pill: NSView!
+    private var topPill: NSView!
     private var layerButton: CircleButton!
     private var capsules: [NSView] = []
     /// The popover that is open right now (reminder), if any. The toolbar stays while it is open.
@@ -205,38 +206,30 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         buttons = [trashButton, pinButton, palette, layerButton, search, settings, close]
 
         let left: [CircleButton] = [trashButton, pinButton, palette, layerButton]
-        let right: [CircleButton] = [search, settings, close]
-
         let height: CGFloat = 40
-        // Flexible space between the two groups.
+
+        // Capsules of glass, like the grouped buttons of Finder's toolbar.
+        func capsule(_ views: [CircleButton]) -> NSView {
+            let row = NSStackView(views: views)
+            row.orientation = .horizontal
+            row.alignment = .centerY
+            row.spacing = 2
+            row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
+            let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
+            return Glass.capsule(around: row, width: width, height: height)
+        }
+        let actions = capsule(left), closing = capsule([close]), corner = capsule([settings, search])
+        capsules = [actions, closing, corner]
+
         let gap = NSView()
         gap.translatesAutoresizingMaskIntoConstraints = false
         gap.setContentHuggingPriority(.init(1), for: .horizontal)
         gap.setContentCompressionResistancePriority(.init(1), for: .horizontal)
-
-        let bar: NSStackView
-        if Glass.isAvailable {
-            // macOS 26: the system's own glass buttons, in a glass container as in Finder's toolbar.
-            bar = NSStackView(views: left + [gap] + right)
-            bar.spacing = 8
-        } else {
-            // Older systems: a frosted capsule around each group.
-            func capsule(_ views: [CircleButton]) -> NSView {
-                let row = NSStackView(views: views)
-                row.orientation = .horizontal
-                row.alignment = .centerY
-                row.spacing = 2
-                row.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)
-                let width = CGFloat(views.count) * CircleButton.diameter + CGFloat(views.count - 1) * 2 + 8
-                return Glass.capsule(around: row, width: width, height: height)
-            }
-            capsules = [capsule(left), capsule(right)]
-            bar = NSStackView(views: [capsules[0], gap, capsules[1]])
-            bar.spacing = 6
-        }
+        let bar = NSStackView(views: [actions, gap, closing])
         bar.orientation = .horizontal
         bar.alignment = .centerY
         bar.distribution = .fill
+        bar.spacing = 6
 
         pill = Glass.group(bar)
         pill.translatesAutoresizingMaskIntoConstraints = false
@@ -249,6 +242,17 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         ])
         pill.alphaValue = 0
         pill.isHidden = true
+
+        // Settings (left) and search (right) in the top right corner.
+        topPill = Glass.group(corner)
+        topPill.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(topPill)
+        NSLayoutConstraint.activate([
+            topPill.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -14),
+            topPill.topAnchor.constraint(equalTo: container.topAnchor, constant: 12),
+        ])
+        topPill.alphaValue = 0
+        topPill.isHidden = true
     }
 
     /// A strip along the top moves the note (the sides and bottom resize it, as in any macOS window).
@@ -283,7 +287,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private func setToolbarVisible(_ visible: Bool, animated: Bool = true) {
-        let pills: [NSView] = [pill]
+        let pills: [NSView] = [pill, topPill]
         if visible {
             pills.forEach { $0.isHidden = false }
             if animated {
@@ -302,7 +306,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
                 // Hidden views don't swallow clicks meant for the text underneath.
                 MainActor.assumeIsolated {  // AppKit calls this on the main thread
                     guard let self else { return }
-                    if self.pill.alphaValue == 0 { self.pill.isHidden = true }
+                    for view in [self.pill, self.topPill] where view?.alphaValue == 0 { view?.isHidden = true }
                 }
             })
         }
@@ -315,6 +319,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         backdrop.appearance = window?.appearance
         applyOpacity()
         pill.appearance = window?.appearance
+        topPill.appearance = window?.appearance
         capsules.forEach { Glass.setBorder(of: $0, to: theme.text.withAlphaComponent(0.10)) }
         textView.theme = theme
         styler.theme = theme
@@ -344,7 +349,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     private func updatePinIcon() {
         let note = store.notes[noteID]
-        let active = (note?.floats ?? false) || (note?.allSpaces ?? false) || note?.reminder != nil
+        let active = note?.reminder != nil || note?.slot != nil
         pinButton?.setSymbol(active ? "pin.fill" : "pin")
         layerButton?.setSymbol((note?.floats ?? false) ? "square.3.layers.3d.top.filled"
                                : (note?.behind ?? false) ? "square.3.layers.3d.bottom.filled" : "square.3.layers.3d")
@@ -403,6 +408,11 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
             item.state = on ? .on : .off
             menu.addItem(item)
         }
+        menu.addItem(.separator())
+        let spaces = NSMenuItem(title: "Show on All Desktops", action: #selector(toggleAllSpaces), keyEquivalent: "")
+        spaces.target = self
+        spaces.state = (note?.allSpaces ?? false) ? .on : .off
+        menu.addItem(spaces)
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }
 
@@ -447,16 +457,6 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     @objc private func showPinMenu(_ sender: NSButton) {
         let note = store.notes[noteID]
         let menu = NSMenu()
-        let float = NSMenuItem(title: "Float Above Other Windows", action: #selector(toggleFloating), keyEquivalent: "")
-        float.target = self
-        float.state = (note?.floats ?? false) ? .on : .off
-        let spaces = NSMenuItem(title: "Show on All Desktops", action: #selector(toggleAllSpaces), keyEquivalent: "")
-        spaces.target = self
-        spaces.state = (note?.allSpaces ?? false) ? .on : .off
-        menu.addItem(float)
-        menu.addItem(spaces)
-
-        menu.addItem(.separator())
         if let due = note?.reminder {
             let info = NSMenuItem(title: "Reminder: " + Reminders.format(due), action: nil, keyEquivalent: "")
             info.isEnabled = false
