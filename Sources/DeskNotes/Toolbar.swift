@@ -69,14 +69,11 @@ enum Glass {
     }
 }
 
-/// A round icon button for the toolbar. Plain until the mouse is over it or it is pressed, then a
-/// soft round highlight appears, like the selected button in Finder's toolbar.
+/// An icon button for the toolbar, inside a glass capsule. It is a plain borderless system button:
+/// the symbol has the system's size and colour (which follow the note's light or dark appearance), and
+/// pressing it dims it as in any macOS toolbar. Nothing is drawn by hand.
 final class CircleButton: NSButton {
     static let diameter: CGFloat = 32
-
-    private var highlightColor = NSColor.clear
-    private var isHovering = false { didSet { needsDisplay = true } }
-    private var area: NSTrackingArea?
 
     init(symbol: String, tip: String, target: AnyObject?, action: Selector?) {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
@@ -94,42 +91,11 @@ final class CircleButton: NSButton {
     required init?(coder: NSCoder) { fatalError("not used") }
 
     func setSymbol(_ name: String) {
-        image = NSImage(systemSymbolName: name, accessibilityDescription: toolTip)?
-            .withSymbolConfiguration(.init(pointSize: 14, weight: .medium))
+        image = NSImage(systemSymbolName: name, accessibilityDescription: toolTip)
     }
 
-    func apply(theme: NoteTheme) {
-        contentTintColor = theme.secondary
-        highlightColor = theme.text.withAlphaComponent(0.10)
-        needsDisplay = true
-    }
-
-    override var isHighlighted: Bool {
-        didSet { needsDisplay = true }
-    }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let area { removeTrackingArea(area) }
-        let new = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                 owner: self, userInfo: nil)
-        addTrackingArea(new)
-        area = new
-    }
-
-    override func mouseEntered(with event: NSEvent) { isHovering = true }
-    override func mouseExited(with event: NSEvent) { isHovering = false }
-
-    /// The highlight is drawn here: always a true circle, whatever size the stack gives us.
-    override func draw(_ dirtyRect: NSRect) {
-        if isHovering || isHighlighted {
-            let diameter = min(bounds.width, bounds.height)
-            highlightColor.setFill()
-            NSBezierPath(ovalIn: NSRect(x: bounds.midX - diameter / 2, y: bounds.midY - diameter / 2,
-                                        width: diameter, height: diameter)).fill()
-        }
-        super.draw(dirtyRect)
-    }
+    /// The system colours follow the window's appearance, so there is nothing to apply.
+    func apply(theme: NoteTheme) {}
 }
 
 /// "Opacity ——●—— 85 %" as a row of the colour menu. Moving the slider changes the note live.
