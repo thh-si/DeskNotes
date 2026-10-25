@@ -1,8 +1,8 @@
 name: Release
-# Push a tag like v1.0.0 to build the disk image and attach it to a GitHub release.
+# Every push to main builds the disk image as a check. Pushing a tag like v1.0.2 also attaches it to a GitHub release.
 on:
-  workflow_dispatch:
   push:
+    branches: [main]
     tags: ["v*"]
 jobs:
   build:
@@ -17,8 +17,16 @@ jobs:
           sudo xcode-select -s "$XCODE"
           swift --version
       - run: swift run CoreChecks
-      - run: ./make-dmg.sh
+      - name: Build the disk image
+        run: |
+          ./make-dmg.sh > dmg.log 2>&1 || {
+            # Public annotation, since the raw log needs a login to read.
+            echo "::error title=make-dmg failed::$(tail -n 30 dmg.log | cut -c1-300 | tr '\n' '|' | sed 's/%/%25/g')"
+            exit 1
+          }
+          tail -n 5 dmg.log
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
         with:
           files: build.noindex/*.dmg
           generate_release_notes: true
