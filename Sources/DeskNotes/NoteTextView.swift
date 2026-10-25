@@ -17,6 +17,10 @@ final class NoteTextView: NSTextView {
     var onTimerCommand: ((TimerCommand) -> Void)?
     private let timerHint = TimerHintView()
     private var wasEmpty = true
+    /// Setting the text directly (loading a note) skips `didChangeText`, so keep `wasEmpty` in step here.
+    override var string: String {
+        didSet { wasEmpty = string.isEmpty }
+    }
     /// Typing attributes of an empty note; set by the window after styling, never during an edit.
     var emptyTypingAttributes: [NSAttributedString.Key: Any] = [:]
     var baseFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
@@ -408,7 +412,19 @@ final class NoteTextView: NSTextView {
         let ns = string as NSString
         let openLen = open.utf16.count, closeLen = close.utf16.count
 
-        if selection.location >= openLen, NSMaxRange(selection) + closeLen <= ns.length,
+        // `*` is also half of bold's `**`: in `**bold**` the asterisks are bold, not italic, so ⌘I
+        // adds italic (`***bold***`) instead of taking one of them away. An odd run (`*x*`,
+        // `***x***`) includes an italic one.
+        var isItalicInsideBold = false
+        if open == "*" {
+            let star = UInt16(UInt8(ascii: "*"))
+            var before = 0, after = 0
+            while selection.location - before > 0, ns.character(at: selection.location - before - 1) == star { before += 1 }
+            while NSMaxRange(selection) + after < ns.length, ns.character(at: NSMaxRange(selection) + after) == star { after += 1 }
+            isItalicInsideBold = min(before, after) % 2 == 0
+        }
+
+        if !isItalicInsideBold, selection.location >= openLen, NSMaxRange(selection) + closeLen <= ns.length,
            ns.substring(with: NSRange(location: selection.location - openLen, length: openLen)) == open,
            ns.substring(with: NSRange(location: NSMaxRange(selection), length: closeLen)) == close {
             let outer = NSRange(location: selection.location - openLen, length: selection.length + openLen + closeLen)

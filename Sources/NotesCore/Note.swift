@@ -107,6 +107,7 @@ public final class NoteStore {
     public let directory: URL
     private var dirty = Set<UUID>()
     private var pendingSave: Task<Void, Never>?
+    private var pendingSaveDeadline: Date?
     /// Where each loaded note lives. Normally `<id>.json`, but a renamed or copied file keeps its
     /// name, so saving doesn't leave a second file with the same note behind.
     private var files: [UUID: URL] = [:]
@@ -221,6 +222,7 @@ public final class NoteStore {
     public func flush() {
         pendingSave?.cancel()
         pendingSave = nil
+        pendingSaveDeadline = nil
         for id in dirty {
             guard let note = notes[id] else {
                 dirty.remove(id)
@@ -248,7 +250,12 @@ public final class NoteStore {
     }
 
     private func scheduleFlush(after delay: TimeInterval) {
+        let deadline = Date().addingTimeInterval(delay)
+        // A save that is already due sooner stays. Restarting the wait on every change would put the
+        // write off for as long as changes keep coming (steady typing, dragging a window).
+        if pendingSave != nil, let due = pendingSaveDeadline, due <= deadline { return }
         pendingSave?.cancel()
+        pendingSaveDeadline = deadline
         // Runs on the main actor, like the rest of the store.
         pendingSave = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))

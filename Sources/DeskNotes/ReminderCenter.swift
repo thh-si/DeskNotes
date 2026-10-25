@@ -7,13 +7,15 @@ import NotesCore
 /// - When the notification is delivered (or clicked) the reminder is cleared from the note.
 /// - At launch, reminders that came due while DeskNotes was not running are cleared; ones that were
 ///   never delivered are shown now, and future ones are scheduled again.
-/// - If notifications are switched off for DeskNotes, a timer shows the note itself when it is due
-///   (while the app is running).
+/// - While any note has a reminder, a timer watches for notifications being switched on or off in
+///   System Settings, and shows the note itself when macOS didn't deliver a reminder (switched off,
+///   or it could not be scheduled).
 @MainActor
 final class ReminderCenter {
     private let store: NoteStore
     private let notifier = Notifier.shared
-    private var fallbackTimer: Timer?
+    private var watchTimer: Timer?
+    private var isChecking = false
     private var warnedAboutNotifications = false
 
     /// Bring this note to the front.
@@ -44,7 +46,7 @@ final class ReminderCenter {
                 if !delivered.contains(note.id) { await announce(note, missed: true) }
             }
         }
-        updateFallbackTimer()
+        updateWatchTimer()
     }
 
     // MARK: Setting and clearing
@@ -61,20 +63,20 @@ final class ReminderCenter {
                     warnNotificationsAreOff()
                 }
             }
-            updateFallbackTimer()
+            updateWatchTimer()
         }
     }
 
     func clear(_ id: UUID) {
         notifier.cancelReminder(noteID: id)
         clearStored(id)
-        updateFallbackTimer()
+        updateWatchTimer()
     }
 
     /// Forget everything about a note that is being deleted.
     func forget(_ id: UUID) {
         notifier.cancelReminder(noteID: id)
-        updateFallbackTimer()
+        updateWatchTimer()
     }
 
     private func clearStored(_ id: UUID) {
@@ -98,29 +100,50 @@ final class ReminderCenter {
         }
     }
 
-    // MARK: Notifications switched off
+    // MARK: Watching for missed reminders
 
-    /// Only needed when macOS won't deliver notifications: then the note is shown when it is due.
-    private func updateFallbackTimer() {
-        let needed = !notifier.isAuthorized && store.notes.values.contains { $0.reminder != nil }
-        if needed, fallbackTimer == nil {
-            fallbackTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.showDueNotes() }  // timers fire on the main thread
+    /// Runs while any note has a reminder. The permission is read again on every tick, because the
+    /// user can switch notifications on or off in System Settings while DeskNotes runs.
+    private func updateWatchTimer() {
+        let needed = store.notes.values.contains { $0.reminder != nil }
+        if needed, watchTimer == nil {
+            watchTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.check() }  // timers fire on the main thread
             }
         } else if !needed {
-            fallbackTimer?.invalidate()
-            fallbackTimer = nil
+            watchTimer?.invalidate()
+            watchTimer = nil
         }
     }
 
-    private func showDueNotes() {
-        let now = Date()
-        for note in store.notes.values where Reminders.isDue(note, now: now) {
+    private func check() {
+        guard !isChecking else { return }
+        isChecking = true
+        Task {
+            defer { isChecking = false }
+            let wasAuthorized = notifier.isAuthorized
+            await notifier.refreshAuthorization()
+            // Just switched on: reminders set while they were off were never handed to macOS.
+            if notifier.isAuthorized, !wasAuthorized {
+                let now = Date()
+                for note in store.notes.values {
+                    if let due = note.reminder, due > now { await schedule(note, at: due) }
+                }
+            }
+            showUndeliveredNotes()
+            updateWatchTimer()
+        }
+    }
+
+    /// A delivered reminder is cleared at once (`onReminderFired`), so one that is still set after
+    /// its time never reached the screen. With notifications on, macOS gets a minute's grace.
+    private func showUndeliveredNotes() {
+        let cutoff = Date().addingTimeInterval(notifier.isAuthorized ? -60 : 0)
+        for note in store.notes.values where Reminders.isDue(note, now: cutoff) {
             clearStored(note.id)
             NSSound.beep()
             onShowNote?(note.id)
         }
-        updateFallbackTimer()
     }
 
     private func warnNotificationsAreOff() {

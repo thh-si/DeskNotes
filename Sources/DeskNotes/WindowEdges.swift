@@ -27,6 +27,13 @@ final class NoteWindow: NSWindow {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        // A click anywhere on a note brings it forward. The system doesn't do it by itself when the
+        // click is taken by something that acts on the first click (toolbar buttons, the move strip,
+        // the top band below), and DeskNotes, as a menu bar app, is rarely the active app.
+        if event.type == .leftMouseDown || event.type == .rightMouseDown, !NSApp.isActive || !isKeyWindow {
+            if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+            makeKeyAndOrderFront(nil)
+        }
         switch event.type {
         case .leftMouseDown where isInMoveBand(event):
             performDrag(with: event)

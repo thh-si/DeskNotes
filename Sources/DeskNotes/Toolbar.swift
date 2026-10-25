@@ -20,6 +20,12 @@ enum Glass {
             let glass = NSGlassEffectView()
             glass.cornerRadius = height / 2
             glass.contentView = content
+            // Without a mask, part of the glass's fill was drawn as a plain rectangle, a little below
+            // the rounded rim, so the capsule showed a square panel behind it.
+            glass.wantsLayer = true
+            glass.layer?.cornerRadius = height / 2
+            glass.layer?.cornerCurve = .continuous
+            glass.layer?.masksToBounds = true
             capsule = glass
         } else {
             let blur = NSVisualEffectView()
@@ -41,17 +47,6 @@ enum Glass {
             capsule.heightAnchor.constraint(equalToConstant: height),
         ])
         return capsule
-    }
-
-    /// Glass capsules in one container are drawn and animated as a group.
-    static func group(_ content: NSView) -> NSView {
-        guard isAvailable, #available(macOS 26, *) else { return content }
-        let container = NSGlassEffectContainerView()
-        container.contentView = content
-        container.spacing = 12
-        content.translatesAutoresizingMaskIntoConstraints = false
-        pin(content, to: container)
-        return container
     }
 
     /// The thin outline of the older look; real glass draws its own edge.
@@ -90,6 +85,10 @@ final class CircleButton: NSButton {
 
     required init?(coder: NSCoder) { fatalError("not used") }
 
+    /// DeskNotes is a menu bar app, so its notes are almost always in an inactive window. A standard
+    /// button ignores the click that activates its window, so the first click did nothing.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     func setSymbol(_ name: String) {
         image = NSImage(systemSymbolName: name, accessibilityDescription: toolTip)
     }
@@ -118,6 +117,7 @@ final class OpacitySliderView: NSView {
         slider.target = self
         slider.action = #selector(moved)
         slider.isContinuous = true
+        slider.setAccessibilityLabel("Opacity")
         slider.doubleValue = Note.clampOpacity(opacity)
 
         let header = NSStackView(views: [title, valueLabel])

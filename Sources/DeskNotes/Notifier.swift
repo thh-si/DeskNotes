@@ -68,7 +68,8 @@ final class Notifier {
     @discardableResult
     func post(title: String, body: String, noteID: UUID? = nil) async -> Bool {
         guard let center, isAuthorized else { return false }
-        let request = UNNotificationRequest(identifier: UUID().uuidString,
+        // A note's notification is named after the note, so `cancelReminder` and `deliveredNoteIDs` find it.
+        let request = UNNotificationRequest(identifier: noteID?.uuidString ?? UUID().uuidString,
                                             content: content(title: title, body: body, noteID: noteID),
                                             trigger: nil)
         return (try? await center.add(request)) != nil

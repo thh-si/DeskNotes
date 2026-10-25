@@ -230,7 +230,9 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         bar.distribution = .fill
         bar.spacing = 6
 
-        pill = Glass.group(bar)
+        // No glass container around the two capsules: they sit too far apart to merge, and the
+        // container's own glass layer drew outside the capsules' rounded shape.
+        pill = bar
         pill.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(pill)
         NSLayoutConstraint.activate([
