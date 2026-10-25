@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if others.isEmpty {
             start()
         } else if Date() >= deadline {
+            // The copy that is already running brings a note up, so opening the app is never silent.
+            DistributedNotificationCenter.default().postNotificationName(Self.reopenRequest, object: nil, userInfo: nil,
+                                                                         deliverImmediately: true)
             NSApp.terminate(nil)
         } else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -42,7 +45,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    /// Sent by a second copy of the app that is about to quit, to the copy that keeps running.
+    private static let reopenRequest = Notification.Name("local.desknotes.reopen")
+
+    /// Opening the app while it runs (Finder, Spotlight, the Dock) shows a note instead of nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        manager.bringUp()
+        return false
+    }
+
     private func start() {
+        DistributedNotificationCenter.default().addObserver(forName: Self.reopenRequest, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.manager.bringUp() }
+        }
         Notifier.shared.start()  // first, so a click on a notification that launched us is received
         buildMainMenu()
         buildStatusItem()

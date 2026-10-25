@@ -121,6 +121,19 @@ final class NoteManager {
         makeController(for: note).show(focus: true)
     }
 
+    /// The app was opened again (Finder, Spotlight, a second copy) and shows nothing yet: bring a note up,
+    /// the most recently edited one, or a new note when there is none.
+    func bringUp() {
+        let shown = controllers.filter { $0.value.isShown }
+        if let first = shown.first {
+            first.value.show(focus: true)
+        } else if let latest = store.notes.values.max(by: { $0.modified < $1.modified }) {
+            show(latest.id)
+        } else {
+            newNote()
+        }
+    }
+
     func show(_ id: UUID) {
         controllers[id]?.show(focus: true)
     }
